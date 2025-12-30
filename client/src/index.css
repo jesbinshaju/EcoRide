@@ -1,0 +1,14 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+body { background-color: #0f172a; color: white; }
+/* When the 'dark' class is active, invert the map colors */
+.dark .leaflet-container {
+    filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
+}
+/* This makes the light map look a bit more "Silver" and expensive */
+.leaflet-container {
+    filter: grayscale(20%) brightness(105%);
+}
+
+

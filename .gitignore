@@ -1,0 +1,14 @@
+# Secret variables
+.env
+
+# Dependencies
+node_modules/
+client/node_modules/
+server/node_modules/
+
+# Build folders
+dist/
+build/
+
+# OS files
+.DS_Store
