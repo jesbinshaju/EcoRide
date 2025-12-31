@@ -3,13 +3,10 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-
 import io from 'socket.io-client';
 import axios from 'axios';
 import L from 'leaflet';
-import { Car, User, Sun, Moon, Copy } from 'lucide-react';
+import { Car, User, Sun, Moon, Copy, CheckCircle } from 'lucide-react';
 
-// --- 1. CRITICAL CSS IMPORT (Missing this hides the map) ---
+// --- CSS & ICON FIX ---
 import "leaflet/dist/leaflet.css";
-
-// --- 2. SAFER ICON FIX (Prevents crash if images aren't found) ---
-// If this crashes, we can remove it, but this standard fix usually works.
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
@@ -33,15 +30,14 @@ export default function App() {
   const [fuelType, setFuelType] = useState('Petrol');
   const [loading, setLoading] = useState(false);
 
-  const [mapCenter, setMapCenter] = useState([10.0159, 76.3419]); // Default to Kochi
+  const [mapCenter, setMapCenter] = useState([10.0159, 76.3419]); 
   const [zoom, setZoom] = useState(13);
   const [routeCoords, setRouteCoords] = useState([]); 
 
-  // Trip State
   const [isTripCreated, setIsTripCreated] = useState(false);
   const [roomCode, setRoomCode] = useState("");
   
-  // Inputs
+  // Driver Inputs
   const [startCity, setStartCity] = useState("");
   const [endCity, setEndCity] = useState("");
   const [mileage, setMileage] = useState(""); 
@@ -49,8 +45,14 @@ export default function App() {
   const [tripCost, setTripCost] = useState(0); 
   const [distance, setDistance] = useState(0);
 
-  // Rider Form
-  const [riderForm, setRiderForm] = useState({ roomCode: '', name: '', startKm: 0, endKm: 0 });
+  // Rider Form (Added maintenance fee flag)
+  const [riderForm, setRiderForm] = useState({ 
+      roomCode: '', 
+      name: '', 
+      startKm: 0, 
+      endKm: 0,
+      isMaintenance: false // NEW CHECKBOX STATE
+  });
 
   useEffect(() => {
     if (theme === 'dark') document.documentElement.classList.add('dark');
@@ -58,8 +60,12 @@ export default function App() {
     localStorage.setItem('theme', theme);
   }, [theme]);
 
+  // LISTEN FOR UPDATES
   useEffect(() => {
-    socket.on('trip_update', (data) => setTripData(data));
+    socket.on('trip_update', (data) => {
+        console.log("Trip Update Received:", data); // Debugging
+        setTripData(data);
+    });
     return () => socket.off('trip_update');
   }, []);
 
@@ -81,28 +87,19 @@ export default function App() {
         if(fuelType === 'Diesel') setFuelPrice(res.data.prices.diesel);
         if(fuelType === 'Electric') setFuelPrice(res.data.prices.electric);
       }
-    } catch (err) {
-      console.log("Using default price");
-    }
+    } catch (err) { console.log("Using default price"); }
   };
 
-  // --- CREATE TRIP LOGIC ---
   const handleCreateTrip = async () => {
     if (!startCity || !endCity || !mileage || !fuelPrice) {
-      alert("Please fill in all fields (Locations, Mileage, Price)");
+      alert("Please fill in all fields");
       return;
     }
-
     setLoading(true);
-
     const start = await getCoords(startCity);
     const end = await getCoords(endCity);
     
-    if (!start || !end) { 
-        alert("City not found. Please check spelling."); 
-        setLoading(false); 
-        return; 
-    }
+    if (!start || !end) { alert("City not found"); setLoading(false); return; }
 
     try {
       const url = `https://router.project-osrm.org/route/v1/driving/${start.lon},${start.lat};${end.lon},${end.lat}?overview=full&geometries=geojson`;
@@ -114,7 +111,6 @@ export default function App() {
         const distKm = route.distance / 1000;
         const path = route.geometry.coordinates.map(c => [c[1], c[0]]);
         
-        // Update Map & Math
         setDistance(distKm);
         setRouteCoords(path);
         setMapCenter([start.lat, start.lon]);
@@ -135,24 +131,29 @@ export default function App() {
         socket.emit('join_ride', { roomCode: code, name: 'Driver', startKm: 0, endKm: distKm });
         setIsTripCreated(true);
       }
-    } catch (e) { 
-        alert("Connection Error. Check internet."); 
-    }
+    } catch (e) { alert("Error creating route"); }
     setLoading(false);
   };
 
   const joinRide = () => {
     if (!riderForm.roomCode || !riderForm.name) return;
+    
+    // SENDING THE EXTRA FEE DATA (server needs to handle this later)
     socket.emit('join_ride', {
-      roomCode: riderForm.roomCode, name: riderForm.name, startKm: riderForm.startKm, endKm: riderForm.endKm
+      roomCode: riderForm.roomCode, 
+      name: riderForm.name, 
+      startKm: riderForm.startKm, 
+      endKm: riderForm.endKm,
+      // We pass the flag here so backend can calculate extra charge
+      isMaintenance: riderForm.isMaintenance 
     });
-    // For rider, we just show the map/list
+    
     setView('active_rider'); 
   };
 
   const copyToClipboard = () => {
       navigator.clipboard.writeText(roomCode);
-      alert("Copied Code: " + roomCode);
+      alert("Room Code Copied!");
   }
 
   return (
@@ -161,7 +162,6 @@ export default function App() {
       {/* --- SIDEBAR --- */}
       <div className={`w-1/3 min-w-[350px] p-6 border-r flex flex-col transition-all duration-500 z-10 ${theme === 'dark' ? 'bg-slate-800 border-slate-700 shadow-xl' : 'bg-[#FCF9EA] border-amber-200 shadow-inner'}`}>
         
-        {/* Header */}
         <div className="flex justify-between items-center mb-6">
             <h1 className="text-3xl font-bold text-green-500 flex items-center gap-2"><Car /> EcoRide</h1>
             <button 
@@ -174,7 +174,6 @@ export default function App() {
 
         <div className="flex-1 overflow-y-auto">
           
-          {/* HOME SCREEN */}
           {view === 'home' && (
             <div className="space-y-4 mt-10">
               <button onClick={() => setView('driver')} className="w-full bg-green-600 p-6 rounded-xl font-bold text-white text-xl hover:bg-green-700 shadow-lg flex items-center justify-center gap-3">
@@ -227,14 +226,13 @@ export default function App() {
                   className="w-full py-4 mt-4 bg-green-600 hover:bg-green-700 text-white font-bold rounded-xl shadow-lg transition-all flex justify-center items-center gap-2">
                   {loading ? "Calculating..." : "CREATE TRIP & GENERATE CODE"}
               </button>
-
               <button onClick={() => setView('home')} className="w-full text-slate-500 text-xs mt-2">Cancel</button>
             </div>
           )}
 
-          {/* DRIVER DASHBOARD (AFTER CREATION) */}
+          {/* DRIVER DASHBOARD */}
           {view === 'driver' && isTripCreated && (
-             <div className="space-y-6 text-center">
+             <div className="space-y-6 text-center animate-fade-in">
                 <div className="bg-green-500/10 border-2 border-green-500 p-6 rounded-2xl relative overflow-hidden">
                     <p className="text-xs uppercase tracking-widest text-green-600 font-bold mb-2">Share this Room Code</p>
                     <div className="text-5xl font-black text-green-600 tracking-wider font-mono bg-white/50 dark:bg-black/20 p-2 rounded-lg inline-block">
@@ -268,37 +266,98 @@ export default function App() {
                         ))
                     ) : (
                         <div className="text-center p-8 border-2 border-dashed border-slate-600 rounded-xl">
-                            <p className="text-slate-500 text-sm">Waiting for passengers to join...</p>
-                            <div className="animate-pulse mt-2 text-xs text-slate-600">Sharing Room Code: {roomCode}</div>
+                            <p className="text-slate-500 text-sm">Waiting for passengers...</p>
                         </div>
                     )}
                 </div>
              </div>
           )}
 
-          {/* RIDER SCREEN */}
-          {(view === 'rider' || view === 'active_rider') && (
-            <div className="space-y-4">
-               {view === 'rider' && (
-                 <>
-                    <h2 className="text-xl font-bold mb-4">Join a Ride</h2>
-                    <input placeholder="Enter Room Code" onChange={e => setRiderForm({...riderForm, roomCode: e.target.value})} className="w-full p-4 bg-slate-900/10 dark:bg-slate-700 rounded-xl font-mono text-center text-lg tracking-widest uppercase" />
-                    <input placeholder="Your Name" onChange={e => setRiderForm({...riderForm, name: e.target.value})} className="w-full p-3 bg-slate-900/10 dark:bg-slate-700 rounded-xl" />
-                    <div className="flex gap-2">
-                        <input type="number" placeholder="Start KM" onChange={e => setRiderForm({...riderForm, startKm: e.target.value})} className="w-1/2 p-3 bg-slate-900/10 dark:bg-slate-700 rounded-xl" />
-                        <input type="number" placeholder="End KM" onChange={e => setRiderForm({...riderForm, endKm: e.target.value})} className="w-1/2 p-3 bg-slate-900/10 dark:bg-slate-700 rounded-xl" />
-                    </div>
-                    <button onClick={joinRide} className="w-full bg-blue-600 hover:bg-blue-700 p-4 rounded-xl font-bold text-white shadow-lg">Join Room</button>
-                    <button onClick={() => setView('home')} className="w-full text-slate-500 text-xs text-center">Back</button>
-                 </>
-               )}
-               {view === 'active_rider' && (
-                   <div className="bg-green-100 p-4 rounded text-center text-green-800">
-                       <h3 className="font-bold">Connected to Trip!</h3>
-                       <p className="text-xs">Waiting for driver updates...</p>
-                   </div>
-               )}
-            </div>
+          {/* RIDER FORM SCREEN */}
+          {view === 'rider' && (
+             <div className="space-y-4">
+                <h2 className="text-xl font-bold mb-4">Join a Ride</h2>
+                <input placeholder="Enter Room Code" onChange={e => setRiderForm({...riderForm, roomCode: e.target.value})} className="w-full p-4 bg-slate-900/10 dark:bg-slate-700 rounded-xl font-mono text-center text-lg tracking-widest uppercase" />
+                <input placeholder="Your Name" onChange={e => setRiderForm({...riderForm, name: e.target.value})} className="w-full p-3 bg-slate-900/10 dark:bg-slate-700 rounded-xl" />
+                
+                {/* KM Inputs */}
+                <div className="flex gap-2">
+                    <input type="number" placeholder="Start KM" onChange={e => setRiderForm({...riderForm, startKm: e.target.value})} className="w-1/2 p-3 bg-slate-900/10 dark:bg-slate-700 rounded-xl" />
+                    <input type="number" placeholder="End KM" onChange={e => setRiderForm({...riderForm, endKm: e.target.value})} className="w-1/2 p-3 bg-slate-900/10 dark:bg-slate-700 rounded-xl" />
+                </div>
+
+                {/* NEW: MAINTENANCE FEE CHECKBOX */}
+                <div className="flex items-center gap-3 p-3 bg-slate-100 dark:bg-slate-800 rounded-xl border border-slate-300 dark:border-slate-600">
+                    <input 
+                        type="checkbox" 
+                        id="maintFee"
+                        className="w-5 h-5 text-green-600 rounded focus:ring-green-500"
+                        checked={riderForm.isMaintenance}
+                        onChange={(e) => setRiderForm({...riderForm, isMaintenance: e.target.checked})}
+                    />
+                    <label htmlFor="maintFee" className="text-xs text-gray-600 dark:text-gray-300">
+                        I agree to pay <span className="font-bold text-green-600">2% extra</span> as Maintenance Contribution for the driver.
+                    </label>
+                </div>
+
+                <button onClick={joinRide} className="w-full bg-blue-600 hover:bg-blue-700 p-4 rounded-xl font-bold text-white shadow-lg">Join Room</button>
+                <button onClick={() => setView('home')} className="w-full text-slate-500 text-xs text-center">Back</button>
+             </div>
+          )}
+
+          {/* ACTIVE RIDER DASHBOARD - FIXED */}
+          {view === 'active_rider' && (
+             <div className="space-y-4">
+                 <h2 className="text-xl font-bold text-green-600 flex items-center gap-2">
+                     <CheckCircle size={20}/> Trip Active
+                 </h2>
+
+                 {tripData ? (
+                     <div className="animate-fade-in space-y-4">
+                         {/* Status Bar */}
+                         <div className="flex justify-between items-center bg-slate-100 dark:bg-slate-700 p-3 rounded-lg">
+                             <span className="text-xs font-mono text-gray-500">Room: {riderForm.roomCode}</span>
+                             <span className="text-xs bg-green-500 text-white px-2 py-1 rounded">Live</span>
+                         </div>
+
+                         {/* MY COST CARD */}
+                         {tripData.passengers && tripData.passengers.filter(p => p.name === riderForm.name).map((myP, i) => (
+                             <div key={i} className="text-center py-8 bg-white dark:bg-slate-800 rounded-xl shadow-lg border-t-4 border-green-500">
+                                 <p className="text-xs text-gray-400 uppercase font-bold tracking-widest mb-2">Your Fair Share</p>
+                                 <p className="text-5xl font-black text-slate-800 dark:text-white">
+                                     ₹{Number(myP.cost).toFixed(2)}
+                                 </p>
+                                 {/* Shows if they selected the checkbox */}
+                                 {riderForm.isMaintenance && (
+                                     <div className="mt-3 inline-block bg-green-100 text-green-800 text-[10px] px-2 py-1 rounded-full font-bold">
+                                         Includes 2% Maintenance Fee
+                                     </div>
+                                 )}
+                             </div>
+                         ))}
+
+                         {/* PASSENGER LIST */}
+                         <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-xl">
+                             <h4 className="text-xs font-bold text-gray-400 uppercase mb-3">All Passengers</h4>
+                             {tripData.passengers.map((p, idx) => (
+                                <div key={idx} className="flex justify-between items-center py-2 border-b border-slate-200 dark:border-slate-700 last:border-0">
+                                    <span className="text-sm font-medium">{p.name}</span>
+                                    <span className="font-mono text-green-600 font-bold">₹{Number(p.cost).toFixed(2)}</span>
+                                </div>
+                             ))}
+                         </div>
+                     </div>
+                 ) : (
+                     // LOADER if data is null
+                     <div className="p-10 text-center bg-yellow-50 dark:bg-yellow-900/20 text-yellow-700 rounded-xl border border-yellow-200 dark:border-yellow-700">
+                        <div className="animate-spin w-8 h-8 border-4 border-yellow-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+                        <p className="font-bold">Connecting to Driver...</p>
+                        <p className="text-xs mt-2 opacity-75">Waiting for the next route update.</p>
+                     </div>
+                 )}
+                 
+                 <button onClick={() => setView('home')} className="w-full text-slate-400 text-xs mt-4">Leave Trip</button>
+             </div>
           )}
 
         </div>
@@ -309,10 +368,7 @@ export default function App() {
         <MapContainer center={mapCenter} zoom={zoom} style={{ height: "100%", width: "100%" }}>
            <ChangeView center={mapCenter} zoom={zoom} />
            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="EcoRide" />
-           
-           {routeCoords.length > 0 && (
-             <Polyline positions={routeCoords} pathOptions={{ color: '#22c55e', weight: 6, opacity: 0.8 }} />
-           )}
+           {routeCoords.length > 0 && <Polyline positions={routeCoords} pathOptions={{ color: '#22c55e', weight: 6 }} />}
            {routeCoords.length > 0 && <Marker position={routeCoords[0]}><Popup>Start</Popup></Marker>}
            {routeCoords.length > 0 && <Marker position={routeCoords[routeCoords.length - 1]}><Popup>End</Popup></Marker>}
         </MapContainer>
