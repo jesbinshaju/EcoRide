@@ -3,7 +3,8 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-
 import io from 'socket.io-client';
 import axios from 'axios';
 import L from 'leaflet';
-import { Car, User, Sun, Moon, Copy, CheckCircle, MapPin, LogOut, Navigation } from 'lucide-react';
+import { Car, User, Sun, Moon, Copy, CheckCircle, MapPin, LogOut, Navigation , Leaf, Wallet, Quote} from 'lucide-react';
+
 
 // --- CSS & ICON FIX ---
 import "leaflet/dist/leaflet.css";
@@ -80,11 +81,44 @@ export default function App() {
       dropCoords: null
   });
 
+  // --- NEW: QUOTES & STATS LOGIC ---
+  const [quote, setQuote] = useState("");
+  const [stats, setStats] = useState({ money: 0, co2: 0 });
+
   useEffect(() => {
     if (theme === 'dark') document.documentElement.classList.add('dark');
     else document.documentElement.classList.remove('dark');
     localStorage.setItem('theme', theme);
   }, [theme]);
+
+  // --- NEW: QUOTES & STATS INITIALIZATION ---
+  const ecoQuotes = [
+      "Every shared ride is a breath of fresh air for the planet.",
+      "Ride together, save together, breathe better.",
+      "Less traffic, more life. Thank you for sharing.",
+      "Small wheels keep on turning, big footprints stop burning.",
+      "Sharing a ride divides the cost and multiplies the joy."
+  ];
+
+  useEffect(() => {
+      // 1. Set Random Quote
+      setQuote(ecoQuotes[Math.floor(Math.random() * ecoQuotes.length)]);
+
+      // 2. Load Stats from LocalStorage (or initialize with a 'base' amount to look cool)
+      const savedMoney = parseFloat(localStorage.getItem('eco_money')) || 12450.50; // Fake base start
+      const savedCo2 = parseFloat(localStorage.getItem('eco_co2')) || 450.2;
+      setStats({ money: savedMoney, co2: savedCo2 });
+
+      // 3. Simulate "Live" global counter (Optional: makes it look active)
+      const interval = setInterval(() => {
+          setStats(prev => ({
+              money: prev.money + 0.05, // Increment slightly
+              co2: prev.co2 + 0.001
+          }));
+      }, 3000);
+
+      return () => clearInterval(interval);
+  }, []);
 
   // LISTEN FOR UPDATES
   useEffect(() => {
@@ -289,11 +323,29 @@ const isLocationOnRoute = (userLoc, routePath, thresholdKm = 15) => { // <--- CH
   };
 
   // --- EXIT TRIP LOGIC ---
+  // Helper to update stats when a trip is finished (Call this in leaveRide)
+  const updateEcoStats = (km) => {
+      // Logic: 1km shared = ~5 INR saved and ~0.12kg CO2 saved
+      const newMoney = stats.money + (km * 5);
+      const newCo2 = stats.co2 + (km * 0.12);
+      
+      setStats({ money: newMoney, co2: newCo2 });
+      localStorage.setItem('eco_money', newMoney);
+      localStorage.setItem('eco_co2', newCo2);
+  };
+
   const leaveRide = () => {
       if(window.confirm("Are you sure you want to leave this trip?")) {
+          // UPDATE STATS HERE BEFORE LEAVING
+          if(riderRouteData.startKm && riderRouteData.endKm) {
+             const dist = Math.abs(riderRouteData.endKm - riderRouteData.startKm);
+             updateEcoStats(dist);
+          }
+          
           socket.emit('leave_trip', { roomCode: riderForm.roomCode, name: riderForm.name });
           setTripData(null);
           setRouteCoords([]);
+          setRiderMarkers([]); // Clear map markers
           setRiderRouteData({ startKm: null, endKm: null, pickupCoords: null, dropCoords: null });
           setView('home');
       }
@@ -375,14 +427,46 @@ const fetchRouteDetails = async () => {
 
         <div className="flex-1 overflow-y-auto">
           
+          {/* --- HOME DASHBOARD --- */}
           {view === 'home' && (
-            <div className="space-y-4 mt-10">
-              <button onClick={() => setView('driver')} className="w-full bg-green-600 p-6 rounded-xl font-bold text-white text-xl hover:bg-green-700 shadow-lg flex items-center justify-center gap-3">
-                 <Car /> Create Trip (Driver)
-              </button>
-              <button onClick={() => setView('rider')} className="w-full bg-blue-600 p-6 rounded-xl font-bold text-white text-xl hover:bg-blue-700 shadow-lg flex items-center justify-center gap-3">
-                 <User /> Join Trip (Rider)
-              </button>
+            <div className="space-y-6 mt-6 animate-fade-in relative h-full flex flex-col">
+              
+              {/* STATS CARDS */}
+              <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-gradient-to-br from-green-500 to-emerald-700 p-4 rounded-2xl text-white shadow-lg relative overflow-hidden group">
+                      <Leaf className="absolute -bottom-4 -right-4 opacity-20 group-hover:scale-125 transition-transform" size={80} />
+                      <p className="text-xs font-medium opacity-80 mb-1">CO₂ Saved (kg)</p>
+                      <h3 className="text-2xl font-bold font-mono">{stats.co2.toFixed(1)}</h3>
+                  </div>
+                  <div className="bg-gradient-to-br from-blue-500 to-indigo-700 p-4 rounded-2xl text-white shadow-lg relative overflow-hidden group">
+                      <Wallet className="absolute -bottom-4 -right-4 opacity-20 group-hover:scale-125 transition-transform" size={80} />
+                      <p className="text-xs font-medium opacity-80 mb-1">Money Saved (₹)</p>
+                      <h3 className="text-2xl font-bold font-mono">₹{stats.money.toFixed(0)}</h3>
+                  </div>
+              </div>
+
+              {/* QUOTE SECTION */}
+              <div className="bg-amber-100 dark:bg-slate-700/50 border-l-4 border-amber-400 p-4 rounded-r-xl italic text-sm text-slate-600 dark:text-slate-300 relative">
+                  <Quote size={16} className="text-amber-400 absolute top-2 right-2 opacity-50"/>
+                  "{quote}"
+              </div>
+
+              {/* BUTTONS */}
+              <div className="space-y-4 pt-4">
+                <button onClick={() => setView('driver')} className="w-full bg-slate-900 dark:bg-green-600 p-5 rounded-xl font-bold text-white text-lg hover:opacity-90 shadow-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02]">
+                   <Car /> Create Trip (Driver)
+                </button>
+                <button onClick={() => setView('rider')} className="w-full bg-blue-600 p-5 rounded-xl font-bold text-white text-lg hover:bg-blue-700 shadow-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02]">
+                   <User /> Join Trip (Rider)
+                </button>
+              </div>
+
+              {/* WATERMARK - Positioned at bottom of this container */}
+              <div className="mt-auto pt-10 pb-2 text-center">
+                  <p className="text-[10px] text-slate-400 dark:text-slate-600 uppercase tracking-widest font-bold">
+                      Project By <span className="text-green-600 dark:text-green-400">Jesbin Shaju</span>
+                  </p>
+              </div>
             </div>
           )}
 
