@@ -3,11 +3,10 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-
 import io from 'socket.io-client';
 import axios from 'axios';
 import L from 'leaflet';
-import { Car, User, Sun, Moon, Copy, CheckCircle, MapPin, LogOut, Navigation , Leaf, Wallet, Quote} from 'lucide-react';
-
+import { Car, User, Sun, Moon, Copy, CheckCircle, MapPin, LogOut, Navigation , Leaf, Wallet, Quote, X} from 'lucide-react';
+import "leaflet/dist/leaflet.css";
 
 // --- CSS & ICON FIX ---
-import "leaflet/dist/leaflet.css";
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
@@ -18,11 +17,9 @@ L.Icon.Default.mergeOptions({
 // --- Backend Connection ---
 const socket = io.connect("http://localhost:5000");
 
-// --- GEOMETRY HELPERS ---
-
-// Calculate distance between two lat/lon points in km (Haversine)
+// --- HELPER: GEOMETRY ---
 const getDist = (lat1, lon1, lat2, lon2) => {
-    const R = 6371; // Radius of earth in km
+    const R = 6371; 
     const dLat = (lat2 - lat1) * (Math.PI / 180);
     const dLon = (lon2 - lon1) * (Math.PI / 180);
     const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
@@ -38,6 +35,63 @@ function ChangeView({ center, zoom }) {
   return null;
 }
 
+// --- NEW COMPONENT: City Search (Google Maps style suggestions) ---
+const CitySearch = ({ placeholder, value, onSelect, onClear }) => {
+    const [suggestions, setSuggestions] = useState([]);
+    const [query, setQuery] = useState(value || "");
+    const [showList, setShowList] = useState(false);
+
+    useEffect(() => { setQuery(value); }, [value]);
+
+    const handleSearch = async (val) => {
+        setQuery(val);
+        if (val.length > 2) {
+            try {
+                // Limit to India (or remove countrycodes for global)
+                const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${val}&countrycodes=in&limit=5`);
+                const data = await res.json();
+                setSuggestions(data);
+                setShowList(true);
+            } catch (e) { console.error(e); }
+        } else {
+            setShowList(false);
+        }
+    };
+
+    const handleSelect = (item) => {
+        const cityName = item.display_name.split(',')[0];
+        setQuery(cityName);
+        setSuggestions([]);
+        setShowList(false);
+        onSelect(cityName, { lat: parseFloat(item.lat), lon: parseFloat(item.lon) });
+    };
+
+    return (
+        <div className="relative w-full">
+            <div className="flex items-center bg-slate-900/10 dark:bg-slate-900/50 rounded-xl border border-slate-400 dark:border-slate-700 px-3">
+                <input 
+                    className="w-full p-3 bg-transparent outline-none"
+                    placeholder={placeholder}
+                    value={query}
+                    onChange={(e) => handleSearch(e.target.value)}
+                    onFocus={() => query.length > 2 && setShowList(true)}
+                />
+                {query && <button onClick={() => {setQuery(""); onClear();}}><X size={14} className="opacity-50"/></button>}
+            </div>
+            {showList && suggestions.length > 0 && (
+                <ul className="absolute top-full left-0 w-full bg-white dark:bg-slate-800 shadow-xl rounded-xl z-50 mt-1 max-h-48 overflow-y-auto border border-slate-200 dark:border-slate-700">
+                    {suggestions.map((s, i) => (
+                        <li key={i} onClick={() => handleSelect(s)} className="p-3 text-xs hover:bg-green-50 dark:hover:bg-slate-700 cursor-pointer border-b border-slate-100 dark:border-slate-700">
+                            <span className="font-bold block text-sm text-slate-700 dark:text-slate-200">{s.display_name.split(',')[0]}</span>
+                            <span className="text-slate-500 truncate block">{s.display_name}</span>
+                        </li>
+                    ))}
+                </ul>
+            )}
+        </div>
+    );
+};
+
 export default function App() {
   const [view, setView] = useState('home'); 
   const [tripData, setTripData] = useState(null);
@@ -49,8 +103,6 @@ export default function App() {
   const [mapCenter, setMapCenter] = useState([10.0159, 76.3419]); 
   const [zoom, setZoom] = useState(13);
   const [routeCoords, setRouteCoords] = useState([]); 
-  
-  // New: Store rider pickup locations for map display
   const [riderMarkers, setRiderMarkers] = useState([]);
 
   const [isTripCreated, setIsTripCreated] = useState(false);
@@ -59,9 +111,10 @@ export default function App() {
   // Driver Inputs
   const [startCity, setStartCity] = useState("");
   const [endCity, setEndCity] = useState("");
+  const [driverCoords, setDriverCoords] = useState({ start: null, end: null }); // Store coords from search
+
   const [mileage, setMileage] = useState(""); 
   const [fuelPrice, setFuelPrice] = useState(105.50); 
-  const [tripCost, setTripCost] = useState(0); 
   const [distance, setDistance] = useState(0);
 
   // Rider Form
@@ -73,7 +126,6 @@ export default function App() {
       isMaintenance: false
   });
   
-  // Validated Rider Data
   const [riderRouteData, setRiderRouteData] = useState({
       startKm: null,
       endKm: null,
@@ -81,7 +133,6 @@ export default function App() {
       dropCoords: null
   });
 
-  // --- NEW: QUOTES & STATS LOGIC ---
   const [quote, setQuote] = useState("");
   const [stats, setStats] = useState({ money: 0, co2: 0 });
 
@@ -91,95 +142,54 @@ export default function App() {
     localStorage.setItem('theme', theme);
   }, [theme]);
 
-  // --- NEW: QUOTES & STATS INITIALIZATION ---
-  const ecoQuotes = [
-      "Every shared ride is a breath of fresh air for the planet.",
-      "Ride together, save together, breathe better.",
-      "Less traffic, more life. Thank you for sharing.",
-      "Small wheels keep on turning, big footprints stop burning.",
-      "Sharing a ride divides the cost and multiplies the joy."
-  ];
-
+  // --- STATS LOGIC (Database + Quote) ---
   useEffect(() => {
-      // 1. Set Random Quote
+      const ecoQuotes = [
+          "Every shared ride is a breath of fresh air for the planet.",
+          "Ride together, save together, breathe better.",
+          "Less traffic, more life. Thank you for sharing.",
+          "Small wheels keep on turning, big footprints stop burning."
+      ];
       setQuote(ecoQuotes[Math.floor(Math.random() * ecoQuotes.length)]);
 
-      // 2. Load Stats from LocalStorage (or initialize with a 'base' amount to look cool)
-      const savedMoney = parseFloat(localStorage.getItem('eco_money')) || 12450.50; // Fake base start
-      const savedCo2 = parseFloat(localStorage.getItem('eco_co2')) || 450.2;
-      setStats({ money: savedMoney, co2: savedCo2 });
-
-      // 3. Simulate "Live" global counter (Optional: makes it look active)
-      const interval = setInterval(() => {
-          setStats(prev => ({
-              money: prev.money + 0.05, // Increment slightly
-              co2: prev.co2 + 0.001
-          }));
-      }, 3000);
-
-      return () => clearInterval(interval);
+      // FETCH STATS FROM DB
+      axios.get('http://localhost:5000/api/stats')
+        .then(res => setStats(res.data))
+        .catch(err => console.log("DB Stats Error (Using local default):", err));
   }, []);
 
   // LISTEN FOR UPDATES
   useEffect(() => {
     socket.on('trip_update', (data) => {
-        console.log("Trip Update Received:", data); 
         setTripData(data);
         
-        // If we are a rider joining, we might need the route from the payload
-        // (Assuming backend passes 'routeCoords' if driver sent them, or we parse from data)
         if(data.routeCoords && data.routeCoords.length > 0) {
             setRouteCoords(data.routeCoords);
-            // Center map on the route if we just got it
-            if(data.routeCoords[0]) setMapCenter(data.routeCoords[0]);
+            // Only re-center if we are looking at a general view, to avoid annoying jumps
+            if(view === 'home' || view === 'rider') setMapCenter(data.routeCoords[0]);
         }
 
-        // Update markers for passengers
         if(data.passengers) {
             const markers = data.passengers
-                .filter(p => p.coords) // Ensure passenger has coords
-                .map(p => ({ lat: p.coords.lat, lon: p.coords.lon, name: p.name }));
+                .filter(p => p.coords) 
+                .map(p => ({ lat: p.coords.lat, lon: p.coords.lon, name: p.name, city: p.pickupCity }));
             setRiderMarkers(markers);
         }
     });
     return () => socket.off('trip_update');
-  }, []);
-
-  const getCoords = async (city) => {
-    try {
-      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${city}`);
-      const data = await res.json();
-      if (!data[0]) return null;
-      return { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
-    } catch (err) { return null; }
-  };
-
-  const autoUpdatePrice = async (city) => {
-    if (!city) return;
-    try {
-      const res = await axios.get(`http://localhost:5000/api/fuel-price/${city}`);
-      if (res.data && res.data.prices) {
-        if(fuelType === 'Petrol') setFuelPrice(res.data.prices.petrol);
-        if(fuelType === 'Diesel') setFuelPrice(res.data.prices.diesel);
-        if(fuelType === 'Electric') setFuelPrice(res.data.prices.electric);
-      }
-    } catch (err) { console.log("Using default price"); }
-  };
+  }, [view]);
 
   // --- DRIVER: CREATE TRIP ---
   const handleCreateTrip = async () => {
-    if (!startCity || !endCity || !mileage || !fuelPrice) {
-      alert("Please fill in all fields");
-      return;
-    }
+    // Check if coords are set via the new inputs, or fallback to text
+    if (!startCity || !endCity || !mileage || !fuelPrice) return alert("Please fill in all fields");
+    if (!driverCoords.start || !driverCoords.end) return alert("Please select cities from the dropdown list");
+
     setLoading(true);
-    const start = await getCoords(startCity);
-    const end = await getCoords(endCity);
-    
-    if (!start || !end) { alert("City not found"); setLoading(false); return; }
+    const start = driverCoords.start;
+    const end = driverCoords.end;
 
     try {
-      // Fetch Route from OSRM
       const url = `https://router.project-osrm.org/route/v1/driving/${start.lon},${start.lat};${end.lon},${end.lat}?overview=full&geometries=geojson`;
       const res = await fetch(url);
       const data = await res.json();
@@ -187,7 +197,6 @@ export default function App() {
       if (data.routes && data.routes.length > 0) {
         const route = data.routes[0];
         const distKm = route.distance / 1000;
-        // Swap [lon, lat] to [lat, lon] for Leaflet
         const path = route.geometry.coordinates.map(c => [c[1], c[0]]);
         
         setDistance(distKm);
@@ -195,29 +204,26 @@ export default function App() {
         setMapCenter([start.lat, start.lon]);
         setZoom(8);
 
-        const mileVal = parseFloat(mileage);
-        const priceVal = parseFloat(fuelPrice);
-        const totalCost = (distKm / mileVal) * priceVal;
-        setTripCost(totalCost.toFixed(2));
-
         const code = Math.random().toString(36).substr(2, 6).toUpperCase();
         setRoomCode(code);
 
-        // Sending routeCoords to server so Riders can validate against it
+        // Send to Backend
         await axios.post('http://localhost:5000/api/create-trip', {
           roomCode: code, 
           totalDist: distKm, 
-          fuelPrice: priceVal, 
-          mileage: mileVal,
-          routeCoords: path // Pass route path to state
+          fuelPrice: parseFloat(fuelPrice), 
+          mileage: parseFloat(mileage),
+          routeCoords: path 
         });
 
+        // Driver joins the room
         socket.emit('join_ride', { 
             roomCode: code, 
             name: 'Driver', 
             startKm: 0, 
             endKm: distKm,
-            isDriver: true 
+            isDriver: true,
+            pickupCity: startCity // Pass the city name!
         });
         setIsTripCreated(true);
       }
@@ -225,30 +231,17 @@ export default function App() {
     setLoading(false);
   };
 
-  // --- RIDER: VALIDATION ALGORITHM ---
-  
-  // 1. Check if user location is near the driver's route
-// Change the default threshold from 5 to 15
-const isLocationOnRoute = (userLoc, routePath, thresholdKm = 15) => { // <--- CHANGED 5 to 15
+  // --- RIDER: VALIDATION ---
+  const isLocationOnRoute = (userLoc, routePath, thresholdKm = 15) => {
     let minDistance = Infinity;
     let closestIndex = -1;
-
     routePath.forEach((point, index) => {
-        // ... (distance calculation logic remains same)
         const d = getDist(userLoc.lat, userLoc.lon, point[0], point[1]);
-        if (d < minDistance) {
-            minDistance = d;
-            closestIndex = index;
-        }
+        if (d < minDistance) { minDistance = d; closestIndex = index; }
     });
-
-    // Console log to debug why it might look "wrong"
-    console.log(`Distance from route: ${minDistance.toFixed(2)} km`);
-
     return { isValid: minDistance <= thresholdKm, closestIndex, minDistance };
-};
+  };
 
-  // 2. Calculate Cumulative Distance (KM) along route to a specific index
   const calculateKmFromRoute = (routePath, targetIndex) => {
       let d = 0;
       for (let i = 0; i < targetIndex; i++) {
@@ -257,156 +250,103 @@ const isLocationOnRoute = (userLoc, routePath, thresholdKm = 15) => { // <--- CH
       return d;
   };
 
-  // 3. Handle Validate Click
   const validateRiderRoute = async () => {
-    if(!riderForm.pickupCity || !riderForm.dropCity) return alert("Enter cities first");
-    if(routeCoords.length === 0) return alert("Enter Room Code and wait for Route Data to load first!");
+    if(!riderRouteData.pickupCoords || !riderRouteData.dropCoords) return alert("Please select valid locations from the list");
+    if(routeCoords.length === 0) return alert("Load Route first!");
 
     setLoading(true);
     
-    // A. Geocode Cities
-    const pickup = await getCoords(riderForm.pickupCity);
-    const dropoff = await getCoords(riderForm.dropCity);
+    // We already have coords from the CitySearch component
+    const pickup = riderRouteData.pickupCoords;
+    const dropoff = riderRouteData.dropCoords;
 
-    if(!pickup || !dropoff) { setLoading(false); return alert("Could not find locations"); }
-
-    // B. Validate Geospatially
     const validStart = isLocationOnRoute(pickup, routeCoords);
     const validEnd = isLocationOnRoute(dropoff, routeCoords);
 
-    if(!validStart.isValid) {
-        setLoading(false);
-        return alert(`Pickup location is too far (${validStart.minDistance.toFixed(1)}km) from the driver's route!`);
-    }
-    if(!validEnd.isValid) {
-        setLoading(false);
-        return alert(`Dropoff location is too far (${validEnd.minDistance.toFixed(1)}km) from the driver's route!`);
-    }
+    if(!validStart.isValid) { setLoading(false); return alert(`Pickup is too far (${validStart.minDistance.toFixed(1)}km) from route!`); }
+    if(!validEnd.isValid) { setLoading(false); return alert(`Dropoff is too far (${validEnd.minDistance.toFixed(1)}km) from route!`); }
 
-    // C. Calculate KMs
     const startKm = calculateKmFromRoute(routeCoords, validStart.closestIndex);
     const endKm = calculateKmFromRoute(routeCoords, validEnd.closestIndex);
 
-    if(startKm >= endKm) {
-        setLoading(false);
-        return alert("Pickup cannot be after Dropoff!");
-    }
+    if(startKm >= endKm) { setLoading(false); return alert("Pickup cannot be after Dropoff!"); }
 
-    // D. Save data for Join
-    setRiderRouteData({
-        startKm: startKm.toFixed(1),
-        endKm: endKm.toFixed(1),
-        pickupCoords: pickup,
-        dropCoords: dropoff
-    });
-
-    // Zoom map to show the segment
+    setRiderRouteData(prev => ({ ...prev, startKm: startKm.toFixed(1), endKm: endKm.toFixed(1) }));
     setMapCenter([pickup.lat, pickup.lon]);
     setZoom(10);
-    
     setLoading(false);
   };
 
   const joinRide = () => {
-    if (!riderForm.roomCode || !riderForm.name || !riderRouteData.startKm) return alert("Please validate route first");
+    if (!riderForm.roomCode || !riderForm.name || !riderRouteData.startKm) return alert("Validate route first");
     
     socket.emit('join_ride', {
       roomCode: riderForm.roomCode, 
       name: riderForm.name, 
       startKm: riderRouteData.startKm, 
       endKm: riderRouteData.endKm,
-      coords: riderRouteData.pickupCoords, // Send coords to display on map
+      coords: riderRouteData.pickupCoords,
+      pickupCity: riderForm.pickupCity, // Send the City Name for the list
       isMaintenance: riderForm.isMaintenance 
     });
     
     setView('active_rider'); 
   };
 
-  // --- EXIT TRIP LOGIC ---
-  // Helper to update stats when a trip is finished (Call this in leaveRide)
-  const updateEcoStats = (km) => {
-      // Logic: 1km shared = ~5 INR saved and ~0.12kg CO2 saved
-      const newMoney = stats.money + (km * 5);
-      const newCo2 = stats.co2 + (km * 0.12);
-      
-      setStats({ money: newMoney, co2: newCo2 });
-      localStorage.setItem('eco_money', newMoney);
-      localStorage.setItem('eco_co2', newCo2);
-  };
+  const endTrip = async () => {
+      if(window.confirm("End Trip for everyone?")) {
+        // SAVE STATS TO DB
+        // Assuming ~50 rupees saved and ~2kg CO2 saved per trip for this demo
+        try {
+            await axios.post('http://localhost:5000/api/stats/update', { money: 50, co2: 2.5 });
+            const res = await axios.get('http://localhost:5000/api/stats');
+            setStats(res.data);
+        } catch(e) { console.error("Stats save error", e); }
+
+        socket.emit('end_trip', roomCode);
+        setTripData(null);
+        setRouteCoords([]);
+        setRiderMarkers([]);
+        setIsTripCreated(false);
+        setView('home');
+      }
+  }
 
   const leaveRide = () => {
-      if(window.confirm("Are you sure you want to leave this trip?")) {
-          // UPDATE STATS HERE BEFORE LEAVING
-          if(riderRouteData.startKm && riderRouteData.endKm) {
-             const dist = Math.abs(riderRouteData.endKm - riderRouteData.startKm);
-             updateEcoStats(dist);
-          }
-          
+      if(window.confirm("Leave trip?")) {
           socket.emit('leave_trip', { roomCode: riderForm.roomCode, name: riderForm.name });
           setTripData(null);
           setRouteCoords([]);
-          setRiderMarkers([]); // Clear map markers
+          setRiderMarkers([]);
           setRiderRouteData({ startKm: null, endKm: null, pickupCoords: null, dropCoords: null });
           setView('home');
       }
   };
 
-  // Helper to pre-fetch route when room code is entered (Simulated by joining room lightly)
-const fetchRouteDetails = async () => {
-      // Validation: ensure code is typed
-      if(!riderForm.roomCode || riderForm.roomCode.length < 4) {
-          alert("Please enter a valid Room Code");
-          return;
-      }
-      
+  const fetchRouteDetails = async () => {
+      if(!riderForm.roomCode) return alert("Enter Code");
       setLoading(true);
-      
       try {
-          // CALL THE NEW API ENDPOINT WE JUST ADDED TO SERVER
           const res = await axios.get(`http://localhost:5000/api/trip/${riderForm.roomCode}`);
-          
           if(res.data) {
-              console.log("Trip Data Received:", res.data);
-              setTripData(res.data); // <--- ADD THIS LINE. This fixes the infinite loading.
-              
-              // 1. UPDATE THE MAP WITH DRIVER'S ROUTE
-              if(res.data.routeCoords && res.data.routeCoords.length > 0) {
+              setTripData(res.data);
+              if(res.data.routeCoords) {
                   setRouteCoords(res.data.routeCoords);
-                  setMapCenter(res.data.routeCoords[0]); // Center map on driver start
-              } else {
-                  alert("Trip found, but no route data available. Ask driver to recreate trip.");
-                  setLoading(false);
-                  return;
+                  setMapCenter(res.data.routeCoords[0]);
               }
-
-              // 2. LOAD EXISTING PASSENGERS ON MAP
               if(res.data.passengers) {
-                  const markers = res.data.passengers
-                    .filter(p => p.coords)
-                    .map(p => ({ lat: p.coords.lat, lon: p.coords.lon, name: p.name }));
+                  const markers = res.data.passengers.filter(p => p.coords).map(p => ({ lat: p.coords.lat, lon: p.coords.lon, name: p.name, city: p.pickupCity }));
                   setRiderMarkers(markers);
               }
-
-              // 3. JOIN SOCKET ROOM FOR LIVE UPDATES
-              // We join as a 'watcher' first to get updates before we actually join as a passenger
-              socket.emit('join_ride', { 
-                  roomCode: riderForm.roomCode, 
-                  name: 'RiderWaiting', // Temporary name
-                  isDriver: false 
-              });
-              
-              alert("Route Loaded! You can now validate your location.");
+              socket.emit('join_ride', { roomCode: riderForm.roomCode, name: 'Watcher', isDriver: false, isWatcher: true });
           }
-      } catch (err) {
-          console.error("Error fetching route:", err);
-          alert("Room Code not found on server.");
-      }
+      } catch (err) { alert("Code not found."); }
       setLoading(false);
   };
 
   const copyToClipboard = () => {
       navigator.clipboard.writeText(roomCode);
-      alert("Room Code Copied!");
+      alert("Copied!");
   }
 
   return (
@@ -416,7 +356,10 @@ const fetchRouteDetails = async () => {
       <div className={`w-1/3 min-w-[350px] p-6 border-r flex flex-col transition-all duration-500 z-10 ${theme === 'dark' ? 'bg-slate-800 border-slate-700 shadow-xl' : 'bg-[#FCF9EA] border-amber-200 shadow-inner'}`}>
         
         <div className="flex justify-between items-center mb-6">
-            <h1 className="text-3xl font-bold text-green-500 flex items-center gap-2"><Car /> EcoRide</h1>
+            {/* UPDATED BRANDING */}
+            <h1 className="text-4xl font-extrabold tracking-tighter text-green-500 flex items-center gap-2" style={{fontFamily: 'Inter, sans-serif'}}>
+                <Car strokeWidth={2.5} /> EcoRide
+            </h1>
             <button 
                 onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} 
                 className={`p-2 rounded-full transition-all ${theme === 'dark' ? 'bg-slate-700 text-yellow-400' : 'bg-slate-200 text-slate-600 hover:bg-slate-300'}`}
@@ -425,33 +368,30 @@ const fetchRouteDetails = async () => {
             </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto flex flex-col">
           
           {/* --- HOME DASHBOARD --- */}
           {view === 'home' && (
-            <div className="space-y-6 mt-6 animate-fade-in relative h-full flex flex-col">
+            <div className="space-y-6 mt-6 animate-fade-in flex flex-col h-full">
               
-              {/* STATS CARDS */}
               <div className="grid grid-cols-2 gap-3">
                   <div className="bg-gradient-to-br from-green-500 to-emerald-700 p-4 rounded-2xl text-white shadow-lg relative overflow-hidden group">
                       <Leaf className="absolute -bottom-4 -right-4 opacity-20 group-hover:scale-125 transition-transform" size={80} />
                       <p className="text-xs font-medium opacity-80 mb-1">CO₂ Saved (kg)</p>
-                      <h3 className="text-2xl font-bold font-mono">{stats.co2.toFixed(1)}</h3>
+                      <h3 className="text-2xl font-bold font-mono">{stats.co2 ? stats.co2.toFixed(1) : '0.0'}</h3>
                   </div>
                   <div className="bg-gradient-to-br from-blue-500 to-indigo-700 p-4 rounded-2xl text-white shadow-lg relative overflow-hidden group">
                       <Wallet className="absolute -bottom-4 -right-4 opacity-20 group-hover:scale-125 transition-transform" size={80} />
                       <p className="text-xs font-medium opacity-80 mb-1">Money Saved (₹)</p>
-                      <h3 className="text-2xl font-bold font-mono">₹{stats.money.toFixed(0)}</h3>
+                      <h3 className="text-2xl font-bold font-mono">₹{stats.money ? stats.money.toFixed(0) : '0'}</h3>
                   </div>
               </div>
 
-              {/* QUOTE SECTION */}
               <div className="bg-amber-100 dark:bg-slate-700/50 border-l-4 border-amber-400 p-4 rounded-r-xl italic text-sm text-slate-600 dark:text-slate-300 relative">
                   <Quote size={16} className="text-amber-400 absolute top-2 right-2 opacity-50"/>
                   "{quote}"
               </div>
 
-              {/* BUTTONS */}
               <div className="space-y-4 pt-4">
                 <button onClick={() => setView('driver')} className="w-full bg-slate-900 dark:bg-green-600 p-5 rounded-xl font-bold text-white text-lg hover:opacity-90 shadow-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02]">
                    <Car /> Create Trip (Driver)
@@ -461,12 +401,6 @@ const fetchRouteDetails = async () => {
                 </button>
               </div>
 
-              {/* WATERMARK - Positioned at bottom of this container */}
-              <div className="mt-auto pt-10 pb-2 text-center">
-                  <p className="text-[10px] text-slate-400 dark:text-slate-600 uppercase tracking-widest font-bold">
-                      Project By <span className="text-green-600 dark:text-green-400">Jesbin Shaju</span>
-                  </p>
-              </div>
             </div>
           )}
 
@@ -476,18 +410,24 @@ const fetchRouteDetails = async () => {
               <h2 className="text-xl font-bold mb-4 border-b pb-2 border-slate-600">Trip Details</h2>
               <div className="grid grid-cols-3 gap-2">
                 {['Petrol', 'Diesel', 'Electric'].map(t => (
-                  <button key={t} onClick={() => {setFuelType(t); autoUpdatePrice(startCity);}} 
+                  <button key={t} onClick={() => setFuelType(t)} 
                     className={`py-2 text-xs font-bold rounded-lg border-2 ${fuelType === t ? 'border-green-500 bg-green-500/10' : 'border-slate-600 opacity-60 hover:opacity-100'}`}>
                     {t}
                   </button>
                 ))}
               </div>
+              
+              {/* NEW CITY SEARCH INPUTS */}
               <div className="space-y-3">
-                  <input value={startCity} placeholder="Start City (e.g. Kochi)" onChange={e => setStartCity(e.target.value)} onBlur={() => autoUpdatePrice(startCity)}
-                    className="w-full p-3 rounded-xl bg-slate-900/10 dark:bg-slate-900/50 border border-slate-400 dark:border-slate-700 focus:border-green-500 outline-none transition" />
-                  <input value={endCity} placeholder="End City (e.g. Trivandrum)" onChange={e => setEndCity(e.target.value)}
-                    className="w-full p-3 rounded-xl bg-slate-900/10 dark:bg-slate-900/50 border border-slate-400 dark:border-slate-700 focus:border-green-500 outline-none transition" />
+                  <CitySearch placeholder="Start City (e.g. Kochi)" value={startCity} 
+                      onSelect={(name, coords) => { setStartCity(name); setDriverCoords(prev => ({...prev, start: coords})); }} 
+                      onClear={() => { setStartCity(""); setDriverCoords(prev => ({...prev, start: null})); }} />
+                      
+                  <CitySearch placeholder="End City (e.g. Trivandrum)" value={endCity} 
+                      onSelect={(name, coords) => { setEndCity(name); setDriverCoords(prev => ({...prev, end: coords})); }} 
+                      onClear={() => { setEndCity(""); setDriverCoords(prev => ({...prev, end: null})); }} />
               </div>
+
               <div className="grid grid-cols-2 gap-4">
                   <div>
                       <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Mileage</label>
@@ -510,7 +450,7 @@ const fetchRouteDetails = async () => {
 
           {/* DRIVER DASHBOARD */}
           {view === 'driver' && isTripCreated && (
-             <div className="space-y-6 text-center animate-fade-in">
+             <div className="space-y-6 text-center animate-fade-in h-full flex flex-col">
                 <div className="bg-green-500/10 border-2 border-green-500 p-6 rounded-2xl relative overflow-hidden">
                     <p className="text-xs uppercase tracking-widest text-green-600 font-bold mb-2">Share Room Code</p>
                     <div className="text-5xl font-black text-green-600 tracking-wider font-mono bg-white/50 dark:bg-black/20 p-2 rounded-lg inline-block">
@@ -519,14 +459,17 @@ const fetchRouteDetails = async () => {
                     <button onClick={copyToClipboard} className="absolute top-2 right-2 p-2 hover:bg-green-200 rounded-full text-green-700"><Copy size={16}/></button>
                 </div>
 
-                <div className="mt-8 text-left">
+                <div className="mt-4 text-left flex-1">
                     <h3 className="text-sm font-bold text-slate-500 uppercase border-b border-slate-700 pb-2 mb-4">Current Passengers</h3>
                     {tripData?.passengers && tripData.passengers.length > 0 ? (
                         tripData.passengers.filter(p => !p.isDriver).map((p, i) => (
                            <div key={i} className="mb-2 p-3 bg-slate-700 rounded-lg flex justify-between items-center border-l-4 border-green-500">
                                 <div>
                                     <span className="font-bold text-white flex items-center gap-2"><MapPin size={12} className="text-green-400"/> {p.name}</span>
-                                    <span className="text-xs text-slate-400 block ml-5">Joining at {Number(p.startKm).toFixed(1)}km</span>
+                                    {/* FIXED: SHOWING LOCATION NAME */}
+                                    <span className="text-[10px] text-slate-400 block ml-5">
+                                        Joining from <span className="text-slate-200">{p.pickupCity || `${Number(p.startKm).toFixed(1)}km`}</span>
+                                    </span>
                                 </div>
                                 <span className="font-bold text-green-400">₹{Number(p.cost).toFixed(2)}</span>
                            </div>
@@ -537,7 +480,11 @@ const fetchRouteDetails = async () => {
                         </div>
                     )}
                 </div>
-                <button onClick={() => {socket.emit('end_trip', roomCode); setView('home')}} className="w-full bg-red-900/50 text-red-400 p-3 rounded-lg text-xs mt-10 hover:bg-red-900">End Trip for Everyone</button>
+                
+                {/* FIXED: RED BUTTON FOR END TRIP */}
+                <button onClick={endTrip} className="w-full bg-red-600 hover:bg-red-700 text-white font-bold p-4 rounded-xl shadow-lg mt-auto">
+                    End Trip for Everyone
+                </button>
              </div>
           )}
 
@@ -552,16 +499,21 @@ const fetchRouteDetails = async () => {
                 
                 <input placeholder="Your Name" value={riderForm.name} onChange={e => setRiderForm({...riderForm, name: e.target.value})} className="w-full p-3 bg-slate-900/10 dark:bg-slate-700 rounded-xl" />
                 
-                {/* NEW LOCATION INPUTS */}
+                {/* NEW LOCATION INPUTS FOR RIDER */}
                 <div className="p-4 bg-slate-50 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 space-y-3 relative">
                     {loading && <div className="absolute inset-0 bg-black/50 flex items-center justify-center rounded-xl z-10"><span className="text-white text-xs font-bold">Validating...</span></div>}
+                    
                     <div className="flex items-center gap-2">
-                        <MapPin size={16} className="text-green-500" />
-                        <input placeholder="Pickup Location (City)" value={riderForm.pickupCity} onChange={e => setRiderForm({...riderForm, pickupCity: e.target.value})} className="w-full bg-transparent border-b border-slate-500 focus:border-green-500 outline-none text-sm p-1" />
+                        <MapPin size={16} className="text-green-500 min-w-[16px]" />
+                        <CitySearch placeholder="Pickup City" value={riderForm.pickupCity} 
+                            onSelect={(name, coords) => { setRiderForm(prev => ({...prev, pickupCity: name})); setRiderRouteData(prev => ({...prev, pickupCoords: coords})); }} 
+                            onClear={() => setRiderForm(prev => ({...prev, pickupCity: ''}))}/>
                     </div>
                     <div className="flex items-center gap-2">
-                        <MapPin size={16} className="text-red-500" />
-                        <input placeholder="Dropoff Location (City)" value={riderForm.dropCity} onChange={e => setRiderForm({...riderForm, dropCity: e.target.value})} className="w-full bg-transparent border-b border-slate-500 focus:border-red-500 outline-none text-sm p-1" />
+                        <MapPin size={16} className="text-red-500 min-w-[16px]" />
+                        <CitySearch placeholder="Dropoff City" value={riderForm.dropCity} 
+                            onSelect={(name, coords) => { setRiderForm(prev => ({...prev, dropCity: name})); setRiderRouteData(prev => ({...prev, dropCoords: coords})); }} 
+                            onClear={() => setRiderForm(prev => ({...prev, dropCity: ''}))}/>
                     </div>
                     
                     {!riderRouteData.startKm ? (
@@ -570,7 +522,7 @@ const fetchRouteDetails = async () => {
                         </button>
                     ) : (
                         <div className="bg-green-500/20 text-green-600 p-2 rounded text-center text-xs font-bold">
-                            Route Validated! <br/> Cost will be calculated for {riderRouteData.startKm}km - {riderRouteData.endKm}km
+                            Route Validated! <br/> Cost calculated for {riderRouteData.startKm}km - {riderRouteData.endKm}km
                         </div>
                     )}
                 </div>
@@ -643,6 +595,13 @@ const fetchRouteDetails = async () => {
              </div>
           )}
 
+          {/* WATERMARK - Positioned at Bottom */}
+          <div className="mt-auto pt-10 pb-2 text-center">
+              <p className="text-[10px] text-slate-400 dark:text-slate-600 uppercase tracking-widest font-bold">
+                  Project By <span className="text-green-600 dark:text-green-400">Jesbin Shaju</span>
+              </p>
+          </div>
+
         </div>
       </div>
 
@@ -652,21 +611,20 @@ const fetchRouteDetails = async () => {
            <ChangeView center={mapCenter} zoom={zoom} />
            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="EcoRide" />
            
-           {/* Draw Driver's Route */}
            {routeCoords.length > 0 && <Polyline positions={routeCoords} pathOptions={{ color: '#22c55e', weight: 6, opacity: 0.8 }} />}
            
-           {/* Start/End Markers for Driver */}
            {routeCoords.length > 0 && <Marker position={routeCoords[0]}><Popup>Trip Start</Popup></Marker>}
            {routeCoords.length > 0 && <Marker position={routeCoords[routeCoords.length - 1]}><Popup>Trip End</Popup></Marker>}
 
-           {/* Rider Markers (Shows name on map) */}
            {riderMarkers.map((m, i) => (
                <Marker key={i} position={[m.lat, m.lon]}>
-                   <Popup className="font-bold">{m.name} (Pickup)</Popup>
+                   <Popup className="font-bold">
+                       {m.name}<br/>
+                       <span className="text-xs text-slate-500 font-normal">{m.city || "Passenger"}</span>
+                   </Popup>
                </Marker>
            ))}
 
-           {/* Current Rider Preview Markers (Before Join) */}
            {view === 'rider' && riderRouteData.pickupCoords && (
                <Marker position={[riderRouteData.pickupCoords.lat, riderRouteData.pickupCoords.lon]} opacity={0.6}>
                    <Popup>Your Pickup</Popup>
