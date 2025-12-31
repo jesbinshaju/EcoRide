@@ -41,6 +41,7 @@ const TripSchema = new mongoose.Schema({
     totalDist: Number,
     fuelPrice: Number,
     mileage: Number,
+    routeCoords: Array, // <--- ADDED: Store route coordinates
     passengers: [{
         id: String,
         name: String,
@@ -54,16 +55,34 @@ const Trip = mongoose.model('Trip', TripSchema);
 // --- 3. API ROUTES ---
 app.post('/api/create-trip', async (req, res) => {
     try {
-        const { roomCode, totalDist, fuelPrice, mileage } = req.body;
+        const { roomCode, totalDist, fuelPrice, mileage, routeCoords } = req.body; // <--- ADDED: routeCoords
         
         const newTrip = new Trip({
             roomCode, totalDist, fuelPrice, mileage,
+            routeCoords, // <--- CRITICAL: Saving the route path here
             passengers: []
         });
         
         await newTrip.save(); // Saves to the real cloud database
         console.log(`Trip created: ${roomCode}`);
-        res.json({ success: true });
+        res.json({ success: true, roomCode });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// --- NEW: GET TRIP DATA ENDPOINT ---
+// This allows clients to download the trip data including route coordinates
+app.get('/api/trip/:roomCode', async (req, res) => {
+    try {
+        const { roomCode } = req.params;
+        const trip = await Trip.findOne({ roomCode });
+
+        if (trip) {
+            res.json(trip);
+        } else {
+            res.status(404).json({ error: "Trip not found" });
+        }
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -90,34 +109,40 @@ app.get('/api/fuel-price', async (req, res) => {
 
 // --- 4. REAL-TIME LOGIC ---
 io.on('connection', (socket) => {
-    socket.on('join_ride', async ({ roomCode, name, startKm, endKm }) => {
-        socket.join(roomCode);
+    socket.on('join_ride', async (data) => {
+        const { roomCode, name, startKm, endKm, coords, isMaintenance } = data; // Receive coords
         
         // Find trip in Real Database
         const trip = await Trip.findOne({ roomCode });
         
         if (trip) {
-            trip.passengers.push({
-                id: socket.id,
-                name,
-                startKm: Number(startKm),
-                endKm: Number(endKm),
-                cost: 0
-            });
-
-            // Calculate Math
-            const costs = calculateFairShare(trip.totalDist, trip.mileage, trip.fuelPrice, trip.passengers);
+            socket.join(roomCode);
             
-            // Update Costs
-            trip.passengers.forEach(p => {
-                if (costs[p.id]) p.cost = costs[p.id];
-            });
+            // Add passenger if they are not just a "watcher"
+            if(name !== 'RiderWaiting') {
+                // Check if passenger already exists to avoid duplicates
+                const existing = trip.passengers.find(p => p.name === name);
+                if (!existing) {
+                    // Calculate Cost logic here...
+                    const cost = ((endKm - startKm) / trip.mileage) * trip.fuelPrice;
+                    const finalCost = isMaintenance ? cost * 1.02 : cost;
+
+                    trip.passengers.push({
+                        name,
+                        startKm: Number(startKm),
+                        endKm: Number(endKm),
+                        cost: finalCost,
+                        coords, // <--- IMPORTANT: Store the coords so they show on map
+                        isDriver: false
+                    });
+                }
+            }
 
             // Save updates to Real Database
             await trip.save();
 
-            // Notify everyone
-            io.to(roomCode).emit('trip_update', trip);
+            // EMIT UPDATE TO EVERYONE IN THE ROOM (Including the sender)
+            io.in(roomCode).emit('trip_update', trip); 
         }
     });
 });
