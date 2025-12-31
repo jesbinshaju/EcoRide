@@ -3,16 +3,19 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-
 import io from 'socket.io-client';
 import axios from 'axios';
 import L from 'leaflet';
-import { Car, Search, MapPin, Sun, Moon, User } from 'lucide-react';
+import { Car, User, Sun, Moon, Copy } from 'lucide-react';
 
-// --- Leaflet Icon Fix ---
-import icon from 'leaflet/dist/images/marker-icon.png';
-import iconShadow from 'leaflet/dist/images/marker-shadow.png';
-let DefaultIcon = L.icon({
-    iconUrl: icon, shadowUrl: iconShadow,
-    iconSize: [25, 41], iconAnchor: [12, 41]
+// --- 1. CRITICAL CSS IMPORT (Missing this hides the map) ---
+import "leaflet/dist/leaflet.css";
+
+// --- 2. SAFER ICON FIX (Prevents crash if images aren't found) ---
+// If this crashes, we can remove it, but this standard fix usually works.
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
+  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
+  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
 });
-L.Marker.prototype.options.icon = DefaultIcon;
 
 // --- Backend Connection ---
 const socket = io.connect("http://localhost:5000");
@@ -30,14 +33,24 @@ export default function App() {
   const [fuelType, setFuelType] = useState('Petrol');
   const [loading, setLoading] = useState(false);
 
-  const [mapCenter, setMapCenter] = useState([10.0159, 76.3419]); // Default to Kochi/India
+  const [mapCenter, setMapCenter] = useState([10.0159, 76.3419]); // Default to Kochi
   const [zoom, setZoom] = useState(13);
   const [routeCoords, setRouteCoords] = useState([]); 
 
-  const [form, setForm] = useState({
-    origin: '', dest: '', mileage: 0, fuel: 105.50,
-    roomCode: '', name: '', startKm: 0, endKm: 0
-  });
+  // Trip State
+  const [isTripCreated, setIsTripCreated] = useState(false);
+  const [roomCode, setRoomCode] = useState("");
+  
+  // Inputs
+  const [startCity, setStartCity] = useState("");
+  const [endCity, setEndCity] = useState("");
+  const [mileage, setMileage] = useState(""); 
+  const [fuelPrice, setFuelPrice] = useState(105.50); 
+  const [tripCost, setTripCost] = useState(0); 
+  const [distance, setDistance] = useState(0);
+
+  // Rider Form
+  const [riderForm, setRiderForm] = useState({ roomCode: '', name: '', startKm: 0, endKm: 0 });
 
   useEffect(() => {
     if (theme === 'dark') document.documentElement.classList.add('dark');
@@ -59,25 +72,37 @@ export default function App() {
     } catch (err) { return null; }
   };
 
-  const autoUpdatePrice = async (city, type) => {
+  const autoUpdatePrice = async (city) => {
     if (!city) return;
     try {
-      const res = await axios.get(`http://localhost:5000/api/fuel-price?city=${city}&type=${type}`);
-      if (res.data && res.data.price) {
-        setForm(prev => ({ ...prev, fuel: res.data.price }));
+      const res = await axios.get(`http://localhost:5000/api/fuel-price/${city}`);
+      if (res.data && res.data.prices) {
+        if(fuelType === 'Petrol') setFuelPrice(res.data.prices.petrol);
+        if(fuelType === 'Diesel') setFuelPrice(res.data.prices.diesel);
+        if(fuelType === 'Electric') setFuelPrice(res.data.prices.electric);
       }
     } catch (err) {
-      console.log("Using default price - backend route not found yet");
+      console.log("Using default price");
     }
   };
 
-  const calculateAndCreate = async () => {
-    if (!form.origin || !form.dest) { alert("Enter route info"); return; }
+  // --- CREATE TRIP LOGIC ---
+  const handleCreateTrip = async () => {
+    if (!startCity || !endCity || !mileage || !fuelPrice) {
+      alert("Please fill in all fields (Locations, Mileage, Price)");
+      return;
+    }
+
     setLoading(true);
-    const start = await getCoords(form.origin);
-    const end = await getCoords(form.dest);
+
+    const start = await getCoords(startCity);
+    const end = await getCoords(endCity);
     
-    if (!start || !end) { alert("City not found"); setLoading(false); return; }
+    if (!start || !end) { 
+        alert("City not found. Please check spelling."); 
+        setLoading(false); 
+        return; 
+    }
 
     try {
       const url = `https://router.project-osrm.org/route/v1/driving/${start.lon},${start.lat};${end.lon},${end.lat}?overview=full&geometries=geojson`;
@@ -89,39 +114,55 @@ export default function App() {
         const distKm = route.distance / 1000;
         const path = route.geometry.coordinates.map(c => [c[1], c[0]]);
         
+        // Update Map & Math
+        setDistance(distKm);
         setRouteCoords(path);
         setMapCenter([start.lat, start.lon]);
         setZoom(8);
 
-        const code = Math.random().toString(36).substr(2, 5).toUpperCase();
+        const mileVal = parseFloat(mileage);
+        const priceVal = parseFloat(fuelPrice);
+        const totalCost = (distKm / mileVal) * priceVal;
+        setTripCost(totalCost.toFixed(2));
+
+        const code = Math.random().toString(36).substr(2, 6).toUpperCase();
+        setRoomCode(code);
+
         await axios.post('http://localhost:5000/api/create-trip', {
-          roomCode: code, totalDist: distKm, fuelPrice: form.fuel, mileage: form.mileage
+          roomCode: code, totalDist: distKm, fuelPrice: priceVal, mileage: mileVal
         });
 
         socket.emit('join_ride', { roomCode: code, name: 'Driver', startKm: 0, endKm: distKm });
-        setForm(prev => ({ ...prev, roomCode: code }));
-        setView('active');
+        setIsTripCreated(true);
       }
-    } catch (e) { alert("Connection Error"); }
+    } catch (e) { 
+        alert("Connection Error. Check internet."); 
+    }
     setLoading(false);
   };
 
   const joinRide = () => {
-    if (!form.roomCode || !form.name) return;
+    if (!riderForm.roomCode || !riderForm.name) return;
     socket.emit('join_ride', {
-      roomCode: form.roomCode, name: form.name, startKm: form.startKm, endKm: form.endKm
+      roomCode: riderForm.roomCode, name: riderForm.name, startKm: riderForm.startKm, endKm: riderForm.endKm
     });
-    setView('active');
+    // For rider, we just show the map/list
+    setView('active_rider'); 
   };
 
+  const copyToClipboard = () => {
+      navigator.clipboard.writeText(roomCode);
+      alert("Copied Code: " + roomCode);
+  }
+
   return (
-      <div className={`flex h-screen ${theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-[#FCF9EA] text-slate-900'}`}>      
-      {/* SIDEBAR CONTAINER */}
-{/* SIDEBAR CONTAINER */}
-{/* SIDEBAR CONTAINER */}
-      <div className={`w-1/3 p-6 border-r flex flex-col transition-all duration-500 ${theme === 'dark' ? 'bg-slate-800 border-slate-700 shadow-xl' : 'bg-[#FCF9EA] border-amber-200 shadow-inner'}`}>
+    <div className={`flex h-screen w-full ${theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-[#FCF9EA] text-slate-900'}`}>      
+      
+      {/* --- SIDEBAR --- */}
+      <div className={`w-1/3 min-w-[350px] p-6 border-r flex flex-col transition-all duration-500 z-10 ${theme === 'dark' ? 'bg-slate-800 border-slate-700 shadow-xl' : 'bg-[#FCF9EA] border-amber-200 shadow-inner'}`}>
         
-        <div className="flex justify-between items-center mb-8">
+        {/* Header */}
+        <div className="flex justify-between items-center mb-6">
             <h1 className="text-3xl font-bold text-green-500 flex items-center gap-2"><Car /> EcoRide</h1>
             <button 
                 onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} 
@@ -131,73 +172,147 @@ export default function App() {
             </button>
         </div>
 
-        {/* --- VIEW SWITCHER --- */}
-        <div className="flex-1">
+        <div className="flex-1 overflow-y-auto">
+          
+          {/* HOME SCREEN */}
           {view === 'home' && (
-            <div className="space-y-4">
-              <button onClick={() => setView('driver')} className="w-full bg-green-600 p-4 rounded-xl font-bold text-white hover:bg-green-700">Create Trip (Driver)</button>
-              <button onClick={() => setView('rider')} className="w-full bg-blue-600 p-4 rounded-xl font-bold text-white hover:bg-blue-700">Join Trip (Rider)</button>
+            <div className="space-y-4 mt-10">
+              <button onClick={() => setView('driver')} className="w-full bg-green-600 p-6 rounded-xl font-bold text-white text-xl hover:bg-green-700 shadow-lg flex items-center justify-center gap-3">
+                 <Car /> Create Trip (Driver)
+              </button>
+              <button onClick={() => setView('rider')} className="w-full bg-blue-600 p-6 rounded-xl font-bold text-white text-xl hover:bg-blue-700 shadow-lg flex items-center justify-center gap-3">
+                 <User /> Join Trip (Rider)
+              </button>
             </div>
           )}
 
-          {view === 'driver' && (
-            <div className="space-y-6">
+          {/* DRIVER INPUT SCREEN */}
+          {view === 'driver' && !isTripCreated && (
+            <div className="space-y-5">
+              <h2 className="text-xl font-bold mb-4 border-b pb-2 border-slate-600">Trip Details</h2>
+              
               <div className="grid grid-cols-3 gap-2">
                 {['Petrol', 'Diesel', 'Electric'].map(t => (
-                  <button key={t} onClick={() => {setFuelType(t); autoUpdatePrice(form.origin, t);}} 
-                    className={`py-2 text-[10px] font-bold rounded-lg border-2 ${fuelType === t ? 'border-green-500 bg-green-500/10' : 'border-slate-700'}`}>{t}</button>
+                  <button key={t} onClick={() => {setFuelType(t); autoUpdatePrice(startCity);}} 
+                    className={`py-2 text-xs font-bold rounded-lg border-2 ${fuelType === t ? 'border-green-500 bg-green-500/10' : 'border-slate-600 opacity-60 hover:opacity-100'}`}>
+                    {t}
+                  </button>
                 ))}
               </div>
-              <input placeholder="Start City" onBlur={e => {setForm({...form, origin: e.target.value}); autoUpdatePrice(e.target.value, fuelType);}} className="w-full p-3 rounded-xl bg-slate-900/50 border border-slate-700" />
-              <input placeholder="End City" onBlur={e => setForm({...form, dest: e.target.value})} className="w-full p-3 rounded-xl bg-slate-900/50 border border-slate-700" />
-              <div className="flex gap-2">
-                <input type="number" placeholder="Mileage" value={form.mileage} onChange={e => setForm({...form, mileage: e.target.value})} className="w-1/2 p-3 bg-slate-900/20 rounded-xl" />
-                <div className="w-1/2 p-3 bg-slate-900/50 rounded-xl text-green-400 font-bold">₹{form.fuel}</div>
+
+              <div className="space-y-3">
+                  <input value={startCity} placeholder="Start City (e.g. Kochi)" 
+                    onChange={e => setStartCity(e.target.value)} onBlur={() => autoUpdatePrice(startCity)}
+                    className="w-full p-3 rounded-xl bg-slate-900/10 dark:bg-slate-900/50 border border-slate-400 dark:border-slate-700 focus:border-green-500 outline-none transition" />
+                  
+                  <input value={endCity} placeholder="End City (e.g. Trivandrum)" 
+                    onChange={e => setEndCity(e.target.value)}
+                    className="w-full p-3 rounded-xl bg-slate-900/10 dark:bg-slate-900/50 border border-slate-400 dark:border-slate-700 focus:border-green-500 outline-none transition" />
               </div>
-              <button onClick={calculateAndCreate} className="w-full bg-green-500 p-4 rounded-xl font-bold text-white uppercase">{loading ? "Calculating..." : "Create Smart Trip"}</button>
-              <button onClick={() => setView('home')} className="w-full text-slate-500 text-xs">Back</button>
+              
+              <div className="grid grid-cols-2 gap-4">
+                  <div>
+                      <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Mileage (km/l)</label>
+                      <input type="number" value={mileage} onChange={(e) => setMileage(e.target.value)} placeholder="e.g. 15"
+                          className="w-full p-3 bg-slate-100 dark:bg-slate-700 rounded-lg font-bold focus:outline-green-500" />
+                  </div>
+                  <div>
+                      <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Fuel Price (₹)</label>
+                      <input type="number" value={fuelPrice} onChange={(e) => setFuelPrice(e.target.value)}
+                          className="w-full p-3 bg-slate-100 dark:bg-slate-700 rounded-lg font-bold focus:outline-green-500" />
+                  </div>
+              </div>
+
+              <button onClick={handleCreateTrip} disabled={loading}
+                  className="w-full py-4 mt-4 bg-green-600 hover:bg-green-700 text-white font-bold rounded-xl shadow-lg transition-all flex justify-center items-center gap-2">
+                  {loading ? "Calculating..." : "CREATE TRIP & GENERATE CODE"}
+              </button>
+
+              <button onClick={() => setView('home')} className="w-full text-slate-500 text-xs mt-2">Cancel</button>
             </div>
           )}
 
-          {view === 'rider' && (
+          {/* DRIVER DASHBOARD (AFTER CREATION) */}
+          {view === 'driver' && isTripCreated && (
+             <div className="space-y-6 text-center">
+                <div className="bg-green-500/10 border-2 border-green-500 p-6 rounded-2xl relative overflow-hidden">
+                    <p className="text-xs uppercase tracking-widest text-green-600 font-bold mb-2">Share this Room Code</p>
+                    <div className="text-5xl font-black text-green-600 tracking-wider font-mono bg-white/50 dark:bg-black/20 p-2 rounded-lg inline-block">
+                        {roomCode}
+                    </div>
+                    <button onClick={copyToClipboard} className="absolute top-2 right-2 p-2 hover:bg-green-200 rounded-full text-green-700"><Copy size={16}/></button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-blue-500/10 p-4 rounded-xl border border-blue-500/30">
+                        <p className="text-xs text-blue-400 uppercase">Total Distance</p>
+                        <p className="text-2xl font-bold text-blue-600">{distance.toFixed(1)} km</p>
+                    </div>
+                    <div className="bg-orange-500/10 p-4 rounded-xl border border-orange-500/30">
+                        <p className="text-xs text-orange-400 uppercase">Total Fuel Cost</p>
+                        <p className="text-2xl font-bold text-orange-600">₹{tripCost}</p>
+                    </div>
+                </div>
+
+                <div className="mt-8 text-left">
+                    <h3 className="text-sm font-bold text-slate-500 uppercase border-b border-slate-700 pb-2 mb-4">Current Passengers</h3>
+                    {tripData?.passengers && tripData.passengers.length > 0 ? (
+                        tripData.passengers.map((p, i) => (
+                           <div key={i} className="mb-2 p-3 bg-slate-700 rounded-lg flex justify-between items-center border-l-4 border-green-500">
+                                <div>
+                                    <span className="font-bold text-white">{p.name}</span>
+                                    <span className="text-xs text-slate-400 block">Joining at {p.startKm}km</span>
+                                </div>
+                                <span className="font-bold text-green-400">₹{Number(p.cost).toFixed(2)}</span>
+                           </div>
+                        ))
+                    ) : (
+                        <div className="text-center p-8 border-2 border-dashed border-slate-600 rounded-xl">
+                            <p className="text-slate-500 text-sm">Waiting for passengers to join...</p>
+                            <div className="animate-pulse mt-2 text-xs text-slate-600">Sharing Room Code: {roomCode}</div>
+                        </div>
+                    )}
+                </div>
+             </div>
+          )}
+
+          {/* RIDER SCREEN */}
+          {(view === 'rider' || view === 'active_rider') && (
             <div className="space-y-4">
-               <input placeholder="Room Code" onChange={e => setForm({...form, roomCode: e.target.value})} className="w-full p-3 bg-slate-700 rounded-xl" />
-               <input placeholder="Name" onChange={e => setForm({...form, name: e.target.value})} className="w-full p-3 bg-slate-700 rounded-xl" />
-               <div className="flex gap-2">
-                  <input type="number" placeholder="Start KM" onChange={e => setForm({...form, startKm: e.target.value})} className="w-1/2 p-3 bg-slate-900 rounded-xl" />
-                  <input type="number" placeholder="End KM" onChange={e => setForm({...form, endKm: e.target.value})} className="w-1/2 p-3 bg-slate-900 rounded-xl" />
-               </div>
-               <button onClick={joinRide} className="w-full bg-blue-500 p-4 rounded-xl font-bold text-white">Join Room</button>
-               <button onClick={() => setView('home')} className="w-full text-slate-500 text-xs text-center">Back</button>
+               {view === 'rider' && (
+                 <>
+                    <h2 className="text-xl font-bold mb-4">Join a Ride</h2>
+                    <input placeholder="Enter Room Code" onChange={e => setRiderForm({...riderForm, roomCode: e.target.value})} className="w-full p-4 bg-slate-900/10 dark:bg-slate-700 rounded-xl font-mono text-center text-lg tracking-widest uppercase" />
+                    <input placeholder="Your Name" onChange={e => setRiderForm({...riderForm, name: e.target.value})} className="w-full p-3 bg-slate-900/10 dark:bg-slate-700 rounded-xl" />
+                    <div className="flex gap-2">
+                        <input type="number" placeholder="Start KM" onChange={e => setRiderForm({...riderForm, startKm: e.target.value})} className="w-1/2 p-3 bg-slate-900/10 dark:bg-slate-700 rounded-xl" />
+                        <input type="number" placeholder="End KM" onChange={e => setRiderForm({...riderForm, endKm: e.target.value})} className="w-1/2 p-3 bg-slate-900/10 dark:bg-slate-700 rounded-xl" />
+                    </div>
+                    <button onClick={joinRide} className="w-full bg-blue-600 hover:bg-blue-700 p-4 rounded-xl font-bold text-white shadow-lg">Join Room</button>
+                    <button onClick={() => setView('home')} className="w-full text-slate-500 text-xs text-center">Back</button>
+                 </>
+               )}
+               {view === 'active_rider' && (
+                   <div className="bg-green-100 p-4 rounded text-center text-green-800">
+                       <h3 className="font-bold">Connected to Trip!</h3>
+                       <p className="text-xs">Waiting for driver updates...</p>
+                   </div>
+               )}
             </div>
           )}
 
-{tripData?.passengers ? tripData.passengers.map((p, i) => (
-   /* REPLACE THIS DIV BELOW */
-   <div key={i} className={`p-4 rounded-2xl flex justify-between items-center border-l-4 border-green-500 transition-all ${
-       theme === 'dark' 
-       ? 'bg-slate-700/50 hover:bg-slate-700 border-slate-600' 
-       : 'bg-[#FFF8DC] shadow-sm shadow-amber-100 border border-amber-200 hover:shadow-md'
-   }`}>
-      <div>
-         <div className={`font-bold ${theme === 'dark' ? 'text-white' : 'text-slate-800'}`}>{p.name}</div>
-         <div className="text-[10px] text-slate-400 font-medium">{Number(p.startKm).toFixed(1)}km - {Number(p.endKm).toFixed(1)}km</div>
-      </div>
-      <div className="text-2xl font-black text-green-500">₹{Number(p.cost).toFixed(2)}</div>
-   </div>
-   /* END OF REPLACEMENT */
-)) : (
-  <p className="text-center text-slate-500 italic">No passengers yet...</p>
-)}
         </div>
       </div>
 
       {/* MAP AREA */}
-      <div className="flex-1 relative">
+      <div className="flex-1 relative z-0">
         <MapContainer center={mapCenter} zoom={zoom} style={{ height: "100%", width: "100%" }}>
            <ChangeView center={mapCenter} zoom={zoom} />
-           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="OSM" />
-           {routeCoords.length > 0 && <Polyline positions={routeCoords} color="blue" weight={4} />}
+           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="EcoRide" />
+           
+           {routeCoords.length > 0 && (
+             <Polyline positions={routeCoords} pathOptions={{ color: '#22c55e', weight: 6, opacity: 0.8 }} />
+           )}
            {routeCoords.length > 0 && <Marker position={routeCoords[0]}><Popup>Start</Popup></Marker>}
            {routeCoords.length > 0 && <Marker position={routeCoords[routeCoords.length - 1]}><Popup>End</Popup></Marker>}
         </MapContainer>
