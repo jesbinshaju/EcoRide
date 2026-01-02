@@ -3,12 +3,8 @@ import http from 'http';
 import { Server } from 'socket.io';
 import mongoose from 'mongoose';
 import cors from 'cors';
-import { calculateFairShare } from './costLogic.js';
-import Stats from './models/Stats.js';
-
+import Stats from './models/Stats.js'; // Ensure this model exists in your folder
 import 'dotenv/config';
-
-
 
 const app = express();
 app.use(cors());
@@ -19,8 +15,7 @@ const io = new Server(server, {
     cors: { origin: "*" }
 });
 
-// --- 1. DATABASE CONNECTION ---
-// PASTE YOUR COPIED LINK BELOW inside the quotes ''
+// --- DATABASE CONNECTION ---
 const mongoURI = process.env.MONGODB_URI;
 
 if (!mongoURI) {
@@ -29,210 +24,176 @@ if (!mongoURI) {
 }
 
 mongoose.connect(mongoURI)
-  .then(() => console.log("✅ MongoDB Connected Safely!"))
-  .catch(err => {
-    console.error("❌ MongoDB connection error:", err.message);
-    process.exit(1);
-  });
+  .then(() => console.log("✅ MongoDB Connected!"))
+  .catch(err => console.error("❌ DB Error:", err));
 
-
-// --- 2. DATABASE SCHEMA ---
+// --- SCHEMA ---
 const TripSchema = new mongoose.Schema({
     roomCode: String,
     totalDist: Number,
     fuelPrice: Number,
     mileage: Number,
-    routeCoords: Array, // <--- ADDED: Store route coordinates
+    routeCoords: Array,
     passengers: [{
-        id: String,
         name: String,
         startKm: Number,
         endKm: Number,
-        cost: Number
+        cost: Number,
+        isDriver: Boolean,
+        pickupCity: String
     }]
 });
 const Trip = mongoose.model('Trip', TripSchema);
 
-// --- 3. API ROUTES ---
+// --- API ROUTES ---
 app.post('/api/create-trip', async (req, res) => {
     try {
-        const { roomCode, totalDist, fuelPrice, mileage, routeCoords } = req.body; // <--- ADDED: routeCoords
-        
-        const newTrip = new Trip({
-            roomCode, totalDist, fuelPrice, mileage,
-            routeCoords, // <--- CRITICAL: Saving the route path here
-            passengers: []
-        });
-        
-        await newTrip.save(); // Saves to the real cloud database
-        console.log(`Trip created: ${roomCode}`);
+        const { roomCode, totalDist, fuelPrice, mileage, routeCoords } = req.body;
+        const newTrip = new Trip({ roomCode, totalDist, fuelPrice, mileage, routeCoords, passengers: [] });
+        await newTrip.save();
         res.json({ success: true, roomCode });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// --- NEW: GET TRIP DATA ENDPOINT ---
-// This allows clients to download the trip data including route coordinates
 app.get('/api/trip/:roomCode', async (req, res) => {
     try {
-        const { roomCode } = req.params;
-        const trip = await Trip.findOne({ roomCode });
-
-        if (trip) {
-            res.json(trip);
-        } else {
-            res.status(404).json({ error: "Trip not found" });
-        }
+        const trip = await Trip.findOne({ roomCode: req.params.roomCode });
+        trip ? res.json(trip) : res.status(404).json({ error: "Not found" });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// --- NEW: FUEL PRICE ROUTE ---
-app.get('/api/fuel-price', async (req, res) => {
-  const { city, type } = req.query;
-  
-  // NOTE: In a real app, you'd call a Fuel API here. 
-  // For your project, let's use a "Smart Default" logic that simulates real Indian prices.
-  const cityPrices = {
-    "mumbai": { petrol: 104.21, diesel: 92.15, electric: 8.50 },
-    "delhi": { petrol: 94.72, diesel: 87.62, electric: 7.00 },
-    "kochi": { petrol: 105.30, diesel: 94.20, electric: 7.50 },
-    "bangalore": { petrol: 102.86, diesel: 88.94, electric: 8.00 },
-  };
-
-  const cityKey = city.toLowerCase();
-  const priceData = cityPrices[cityKey] || { petrol: 101.50, diesel: 90.00, electric: 7.50 }; // Default if city not in list
-
-  res.json({ price: priceData[type.toLowerCase()] });
-});
-
-// --- API TO GET STATS ---
 app.get('/api/stats', async (req, res) => {
-    try {
-        let stats = await Stats.findOne();
-        if (!stats) stats = await Stats.create({ totalMoneySaved: 12450, totalCo2Saved: 450 }); // Initial dummy data
-        res.json({ money: stats.totalMoneySaved, co2: stats.totalCo2Saved });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+    let stats = await Stats.findOne();
+    if (!stats) stats = await Stats.create({ totalMoneySaved: 0, totalCo2Saved: 0 });
+    res.json({ money: stats.totalMoneySaved, co2: stats.totalCo2Saved });
 });
 
-// --- API TO UPDATE STATS (CALLED WHEN TRIP ENDS) ---
 app.post('/api/stats/update', async (req, res) => {
-    try {
-        const { money, co2 } = req.body;
-        let stats = await Stats.findOne();
-        if (!stats) stats = await Stats.create({ totalMoneySaved: 0, totalCo2Saved: 0 });
-        stats.totalMoneySaved += money;
-        stats.totalCo2Saved += co2;
-        await stats.save();
-        res.json(stats);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+    const { money, co2 } = req.body;
+    let stats = await Stats.findOne();
+    if (!stats) stats = await Stats.create({ totalMoneySaved: 0, totalCo2Saved: 0 });
+    stats.totalMoneySaved += money;
+    stats.totalCo2Saved += co2;
+    await stats.save();
+    res.json(stats);
 });
 
-// --- STORE TRIPS IN MEMORY FOR COST CALCULATION ---
+// --- IN-MEMORY STATE ---
 const trips = {};
 
-// --- 4. REAL-TIME LOGIC ---
-io.on('connection', (socket) => {
-    socket.on('join_ride', (data) => {
-        socket.join(data.roomCode);
+// --- COST CALCULATION LOGIC (The Fix) ---
+const recalculateCosts = (tripData) => {
+    // 1. Sort all unique geographic points (Start, Drops, Pickups, End)
+    let points = [0, tripData.totalDist];
+    tripData.passengers.forEach(p => {
+        if(p.startKm !== null) points.push(p.startKm);
+        if(p.endKm !== null) points.push(p.endKm);
+    });
+    // Remove duplicates and sort numerically
+    points = [...new Set(points)].sort((a, b) => a - b);
 
-        // FIX 1: HANDLE WATCHERS (Don't add them to the bill)
-        if (data.isWatcher) {
-            // Just send them the current data and stop here
-            if (trips[data.roomCode]) {
-                socket.emit('trip_update', trips[data.roomCode]);
+    // 2. Cost Per Km for the car
+    const costPerKm = tripData.fuelPrice / tripData.mileage;
+
+    // 3. Reset everyone's cost
+    tripData.passengers.forEach(p => p.cost = 0);
+
+    // 4. Iterate through every segment
+    for (let i = 0; i < points.length - 1; i++) {
+        const segmentStart = points[i];
+        const segmentEnd = points[i + 1];
+        const distance = segmentEnd - segmentStart;
+
+        if (distance <= 0) continue;
+
+        // Find who is in the car for this specific segment
+        // A passenger is "active" if they started before/at segment start AND get off after/at segment end
+        const activePassengers = tripData.passengers.filter(p => 
+            p.startKm <= segmentStart && p.endKm >= segmentEnd
+        );
+
+        if (activePassengers.length > 0) {
+            const segmentCost = distance * costPerKm;
+            const splitCost = segmentCost / activePassengers.length;
+
+            // Add the split cost to everyone in the car
+            activePassengers.forEach(p => {
+                p.cost += splitCost;
+            });
+        }
+    }
+
+    // 5. Apply Maintenance Fee (2%) logic
+    tripData.passengers.forEach(p => {
+        if (p.isMaintenance && !p.isDriver) {
+            p.cost = p.cost * 1.02; 
+        }
+    });
+
+    return tripData;
+};
+
+// --- SOCKET LOGIC ---
+io.on('connection', (socket) => {
+    
+    socket.on('join_ride', async (data) => {
+        socket.join(data.roomCode);
+        const { roomCode, name, startKm, endKm, coords, isDriver, pickupCity, isMaintenance, isWatcher } = data;
+
+        // If trip not in memory, fetch from DB
+        if (!trips[roomCode]) {
+            const dbTrip = await Trip.findOne({ roomCode });
+            if (dbTrip) {
+                trips[roomCode] = {
+                    totalDist: dbTrip.totalDist,
+                    fuelPrice: dbTrip.fuelPrice,
+                    mileage: dbTrip.mileage,
+                    routeCoords: dbTrip.routeCoords,
+                    passengers: [] // Re-populate passengers as they join
+                };
+            } else {
+                // Should not happen if create-trip was called, but safety fallback
+                if(!isWatcher) socket.emit('error', 'Trip not found');
+                return;
             }
+        }
+
+        const trip = trips[roomCode];
+
+        if (isWatcher) {
+            socket.emit('trip_update', trip);
             return;
         }
 
-        const { roomCode, name, startKm, endKm, coords, isDriver, pickupCity, isMaintenance } = data;
-
-        // Initialize Trip if new
-        if (!trips[roomCode]) {
-            trips[roomCode] = { 
-                passengers: [], 
-                routeCoords: [], 
-                totalDist: 0, 
-                fuelPrice: 0, 
-                mileage: 0,
-                driverName: name // Store driver name to identify easily
-            };
-        }
-        
-        const trip = trips[roomCode];
-
-        // FIX 2: PREVENT DUPLICATES & UPDATE EXISTING USERS
-        // Check if this person is already in the list to avoid double entry
+        // Add/Update Passenger
         const existingIdx = trip.passengers.findIndex(p => p.name === name);
+        const passengerData = {
+            name,
+            startKm: parseFloat(startKm),
+            endKm: parseFloat(endKm),
+            coords,
+            isDriver: !!isDriver,
+            pickupCity: pickupCity || (isDriver ? 'Start' : 'Unknown'),
+            isMaintenance: !!isMaintenance,
+            socketId: socket.id,
+            cost: 0 // Will be calculated below
+        };
+
         if (existingIdx !== -1) {
-            trip.passengers[existingIdx] = { ...trip.passengers[existingIdx], ...data, socketId: socket.id };
+            trip.passengers[existingIdx] = { ...trip.passengers[existingIdx], ...passengerData };
         } else {
-            trip.passengers.push({
-                name,
-                startKm: parseFloat(startKm),
-                endKm: parseFloat(endKm),
-                coords,
-                isDriver: !!isDriver,
-                pickupCity: pickupCity || 'Start',
-                isMaintenance: !!isMaintenance,
-                socketId: socket.id,
-                cost: 0 // Initialize cost
-            });
+            trip.passengers.push(passengerData);
         }
 
-        // --- FIX 3: THE PRICE LOGIC (PROPER SPLIT) ---
-        // 1. Get all significant points (Start of trip, End of trip, Pickups, Drops)
-        let points = [0, trip.totalDist];
-        trip.passengers.forEach(p => { 
-            points.push(p.startKm); 
-            points.push(p.endKm); 
-        });
-        // Sort points and remove duplicates
-        points = [...new Set(points)].sort((a,b) => a - b);
+        // RECALCULATE COSTS
+        const updatedTrip = recalculateCosts(trip);
+        trips[roomCode] = updatedTrip;
 
-        // 2. Reset everyone's cost
-        trip.passengers.forEach(p => p.cost = 0);
-        
-        const costPerKm = trip.fuelPrice / trip.mileage;
-
-        // 3. Calculate cost for each segment
-        for(let i=0; i < points.length - 1; i++) {
-            const segStart = points[i];
-            const segEnd = points[i+1];
-            const dist = segEnd - segStart;
-            
-            if (dist <= 0) continue;
-
-            // Find who is in the car during this segment
-            // (A passenger is active if their start is <= segment start AND their end is >= segment end)
-            const activePassengers = trip.passengers.filter(p => p.startKm <= segStart && p.endKm >= segEnd);
-            
-            if(activePassengers.length > 0) {
-                const segmentTotalCost = dist * costPerKm;
-                const costPerPerson = segmentTotalCost / activePassengers.length;
-                
-                // Add share to each active person (Including Driver)
-                activePassengers.forEach(p => {
-                    p.cost += costPerPerson;
-                });
-            }
-        }
-
-        // 4. Apply Maintenance Fee (Only for those who agreed)
-        trip.passengers.forEach(p => {
-            if(p.isMaintenance && !p.isDriver) {
-                p.cost = p.cost * 1.02; // 2% extra
-            }
-        });
-
-        // Broadcast
-        io.to(roomCode).emit('trip_update', trip);
+        io.to(roomCode).emit('trip_update', updatedTrip);
     });
 
     socket.on('end_trip', (roomCode) => {
@@ -240,13 +201,13 @@ io.on('connection', (socket) => {
         io.to(roomCode).emit('trip_end');
     });
 
-    socket.on('leave_trip', ({roomCode, name}) => {
-        if(trips[roomCode]) {
+    socket.on('leave_trip', ({ roomCode, name }) => {
+        if (trips[roomCode]) {
             trips[roomCode].passengers = trips[roomCode].passengers.filter(p => p.name !== name);
-            // Re-run calculation logic here if needed, or wait for next join
+            recalculateCosts(trips[roomCode]);
             io.to(roomCode).emit('trip_update', trips[roomCode]);
         }
     });
 });
 
-server.listen(5000, () => console.log('Server running on port 5000'));
+server.listen(5000, () => console.log('✅ Server running on 5000'));

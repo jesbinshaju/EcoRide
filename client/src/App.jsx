@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-
 import io from 'socket.io-client';
 import axios from 'axios';
 import L from 'leaflet';
-import { Car, User, Sun, Moon, Copy, CheckCircle, MapPin, LogOut, Navigation , Leaf, Wallet, Quote, X} from 'lucide-react';
+import { Car, User, Sun, Moon, Copy, CheckCircle, MapPin, LogOut, Navigation , Leaf, Wallet, Quote, X, Play, StopCircle, Banknote, QrCode} from 'lucide-react';
 import "leaflet/dist/leaflet.css";
 
 // --- CSS & ICON FIX ---
@@ -35,7 +35,7 @@ function ChangeView({ center, zoom }) {
   return null;
 }
 
-// --- NEW COMPONENT: City Search (Google Maps style suggestions) ---
+// --- CITY SEARCH COMPONENT ---
 const CitySearch = ({ placeholder, value, onSelect, onClear }) => {
     const [suggestions, setSuggestions] = useState([]);
     const [query, setQuery] = useState(value || "");
@@ -47,7 +47,6 @@ const CitySearch = ({ placeholder, value, onSelect, onClear }) => {
         setQuery(val);
         if (val.length > 2) {
             try {
-                // Limit to India (or remove countrycodes for global)
                 const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${val}&countrycodes=in&limit=5`);
                 const data = await res.json();
                 setSuggestions(data);
@@ -111,9 +110,9 @@ export default function App() {
   // Driver Inputs
   const [startCity, setStartCity] = useState("");
   const [endCity, setEndCity] = useState("");
-  const [driverCoords, setDriverCoords] = useState({ start: null, end: null }); // Store coords from search
+  const [driverCoords, setDriverCoords] = useState({ start: null, end: null }); 
 
-  const [mileage, setMileage] = useState(""); 
+  const [mileage, setMileage] = useState("15"); 
   const [fuelPrice, setFuelPrice] = useState(105.50); 
   const [distance, setDistance] = useState(0);
 
@@ -136,39 +135,42 @@ export default function App() {
   const [quote, setQuote] = useState("");
   const [stats, setStats] = useState({ money: 0, co2: 0 });
 
+  // LIVE SOLO TRACKING STATE
+  const [isTracking, setIsTracking] = useState(false);
+  const [livePath, setLivePath] = useState([]);
+  const [liveDistance, setLiveDistance] = useState(0);
+  const watchId = useRef(null);
+
+  // UPI MODAL STATE
+  const [showPayment, setShowPayment] = useState(false);
+
   useEffect(() => {
     if (theme === 'dark') document.documentElement.classList.add('dark');
     else document.documentElement.classList.remove('dark');
     localStorage.setItem('theme', theme);
   }, [theme]);
 
-  // --- STATS LOGIC (Database + Quote) ---
   useEffect(() => {
       const ecoQuotes = [
-          "Every shared ride is a breath of fresh air for the planet.",
-          "Ride together, save together, breathe better.",
-          "Less traffic, more life. Thank you for sharing.",
-          "Small wheels keep on turning, big footprints stop burning."
+          "Ride together, save together.",
+          "Small wheels, big footprints.",
+          "Every shared ride helps.",
+          "Less traffic, more life."
       ];
       setQuote(ecoQuotes[Math.floor(Math.random() * ecoQuotes.length)]);
 
-      // FETCH STATS FROM DB
       axios.get('http://localhost:5000/api/stats')
         .then(res => setStats(res.data))
-        .catch(err => console.log("DB Stats Error (Using local default):", err));
+        .catch(err => console.log("DB Stats Error", err));
   }, []);
 
-  // LISTEN FOR UPDATES
   useEffect(() => {
     socket.on('trip_update', (data) => {
         setTripData(data);
-        
-        if(data.routeCoords && data.routeCoords.length > 0) {
+        if(data.routeCoords && data.routeCoords.length > 0 && view !== 'solo') {
             setRouteCoords(data.routeCoords);
-            // Only re-center if we are looking at a general view, to avoid annoying jumps
             if(view === 'home' || view === 'rider') setMapCenter(data.routeCoords[0]);
         }
-
         if(data.passengers) {
             const markers = data.passengers
                 .filter(p => p.coords) 
@@ -179,11 +181,60 @@ export default function App() {
     return () => socket.off('trip_update');
   }, [view]);
 
-  // --- DRIVER: CREATE TRIP ---
+  // --- LIVE TRACKING LOGIC (With Cost Calculation) ---
+  const toggleLiveTracking = () => {
+      if (isTracking) {
+          // STOP & SAVE
+          navigator.geolocation.clearWatch(watchId.current);
+          setIsTracking(false);
+          
+          const price = parseFloat(fuelPrice) || 105;
+          const mil = parseFloat(mileage) || 15;
+          const moneySpent = (liveDistance * price) / mil;
+
+          axios.post('http://localhost:5000/api/stats/update', { 
+              money: moneySpent, 
+              co2: liveDistance * 0.1 
+          }).then(res => setStats(res.data)); 
+
+      } else {
+          // START
+          if (!navigator.geolocation) return alert("Geolocation not supported");
+          
+          setLivePath([]);
+          setLiveDistance(0);
+          setIsTracking(true);
+
+          watchId.current = navigator.geolocation.watchPosition((pos) => {
+              const { latitude, longitude } = pos.coords;
+              const newPoint = [latitude, longitude];
+
+              setLivePath(prev => {
+                  if (prev.length > 0) {
+                      const last = prev[prev.length - 1];
+                      const d = getDist(last[0], last[1], latitude, longitude);
+                      if (d > 0.005) { 
+                          setLiveDistance(old => old + d);
+                          return [...prev, newPoint];
+                      }
+                      return prev;
+                  }
+                  return [newPoint];
+              });
+              setMapCenter(newPoint);
+          }, (err) => console.error(err), { enableHighAccuracy: true });
+      }
+  };
+
+  // --- UPI HELPER ---
+  const generateUPI = (amount) => {
+      return `upi://pay?pa=driver@upi&pn=EcoRideDriver&am=${amount}&cu=INR`;
+  };
+
+  // --- DRIVER FUNCTIONS ---
   const handleCreateTrip = async () => {
-    // Check if coords are set via the new inputs, or fallback to text
     if (!startCity || !endCity || !mileage || !fuelPrice) return alert("Please fill in all fields");
-    if (!driverCoords.start || !driverCoords.end) return alert("Please select cities from the dropdown list");
+    if (!driverCoords.start || !driverCoords.end) return alert("Please select cities");
 
     setLoading(true);
     const start = driverCoords.start;
@@ -207,7 +258,6 @@ export default function App() {
         const code = Math.random().toString(36).substr(2, 6).toUpperCase();
         setRoomCode(code);
 
-        // Send to Backend
         await axios.post('http://localhost:5000/api/create-trip', {
           roomCode: code, 
           totalDist: distKm, 
@@ -216,22 +266,16 @@ export default function App() {
           routeCoords: path 
         });
 
-        // Driver joins the room
         socket.emit('join_ride', { 
-            roomCode: code, 
-            name: 'Driver', 
-            startKm: 0, 
-            endKm: distKm,
-            isDriver: true,
-            pickupCity: startCity // Pass the city name!
+            roomCode: code, name: 'Driver', startKm: 0, endKm: distKm, isDriver: true, pickupCity: startCity
         });
         setIsTripCreated(true);
       }
-    } catch (e) { alert("Error creating route"); console.error(e);}
+    } catch (e) { alert("Error creating route"); }
     setLoading(false);
   };
 
-  // --- RIDER: VALIDATION ---
+  // --- RIDER FUNCTIONS ---
   const isLocationOnRoute = (userLoc, routePath, thresholdKm = 15) => {
     let minDistance = Infinity;
     let closestIndex = -1;
@@ -251,25 +295,22 @@ export default function App() {
   };
 
   const validateRiderRoute = async () => {
-    if(!riderRouteData.pickupCoords || !riderRouteData.dropCoords) return alert("Please select valid locations from the list");
+    if(!riderRouteData.pickupCoords || !riderRouteData.dropCoords) return alert("Please select valid locations");
     if(routeCoords.length === 0) return alert("Load Route first!");
 
     setLoading(true);
-    
-    // We already have coords from the CitySearch component
     const pickup = riderRouteData.pickupCoords;
     const dropoff = riderRouteData.dropCoords;
 
     const validStart = isLocationOnRoute(pickup, routeCoords);
     const validEnd = isLocationOnRoute(dropoff, routeCoords);
 
-    if(!validStart.isValid) { setLoading(false); return alert(`Pickup is too far (${validStart.minDistance.toFixed(1)}km) from route!`); }
-    if(!validEnd.isValid) { setLoading(false); return alert(`Dropoff is too far (${validEnd.minDistance.toFixed(1)}km) from route!`); }
+    if(!validStart.isValid || !validEnd.isValid) { setLoading(false); return alert(`Location too far from route!`); }
 
     const startKm = calculateKmFromRoute(routeCoords, validStart.closestIndex);
     const endKm = calculateKmFromRoute(routeCoords, validEnd.closestIndex);
 
-    if(startKm >= endKm) { setLoading(false); return alert("Pickup cannot be after Dropoff!"); }
+    if(startKm >= endKm) { setLoading(false); return alert("Invalid Direction!"); }
 
     setRiderRouteData(prev => ({ ...prev, startKm: startKm.toFixed(1), endKm: endKm.toFixed(1) }));
     setMapCenter([pickup.lat, pickup.lon]);
@@ -279,45 +320,35 @@ export default function App() {
 
   const joinRide = () => {
     if (!riderForm.roomCode || !riderForm.name || !riderRouteData.startKm) return alert("Validate route first");
-    
     socket.emit('join_ride', {
-      roomCode: riderForm.roomCode, 
-      name: riderForm.name, 
-      startKm: riderRouteData.startKm, 
-      endKm: riderRouteData.endKm,
-      coords: riderRouteData.pickupCoords,
-      pickupCity: riderForm.pickupCity, // Send the City Name for the list
-      isMaintenance: riderForm.isMaintenance 
+      roomCode: riderForm.roomCode, name: riderForm.name, 
+      startKm: riderRouteData.startKm, endKm: riderRouteData.endKm,
+      coords: riderRouteData.pickupCoords, pickupCity: riderForm.pickupCity, isMaintenance: riderForm.isMaintenance 
     });
-    
     setView('active_rider'); 
   };
 
   const endTrip = async () => {
       if(window.confirm("End Trip for everyone?")) {
-        // SAVE STATS TO DB
-        // Assuming ~50 rupees saved and ~2kg CO2 saved per trip for this demo
         try {
-            await axios.post('http://localhost:5000/api/stats/update', { money: 50, co2: 2.5 });
+            const finalDist = liveDistance > 0 ? liveDistance : distance;
+            const price = parseFloat(fuelPrice) || 105;
+            const mil = parseFloat(mileage) || 15;
+            const moneySpent = (finalDist * price) / mil;
+
+            await axios.post('http://localhost:5000/api/stats/update', { money: moneySpent, co2: finalDist * 0.1 });
             const res = await axios.get('http://localhost:5000/api/stats');
             setStats(res.data);
-        } catch(e) { console.error("Stats save error", e); }
-
+        } catch(e) {}
         socket.emit('end_trip', roomCode);
-        setTripData(null);
-        setRouteCoords([]);
-        setRiderMarkers([]);
-        setIsTripCreated(false);
-        setView('home');
+        setTripData(null); setRouteCoords([]); setRiderMarkers([]); setIsTripCreated(false); setLivePath([]); setIsTracking(false); setView('home');
       }
   }
 
   const leaveRide = () => {
       if(window.confirm("Leave trip?")) {
           socket.emit('leave_trip', { roomCode: riderForm.roomCode, name: riderForm.name });
-          setTripData(null);
-          setRouteCoords([]);
-          setRiderMarkers([]);
+          setTripData(null); setRouteCoords([]); setRiderMarkers([]); 
           setRiderRouteData({ startKm: null, endKm: null, pickupCoords: null, dropCoords: null });
           setView('home');
       }
@@ -330,15 +361,9 @@ export default function App() {
           const res = await axios.get(`http://localhost:5000/api/trip/${riderForm.roomCode}`);
           if(res.data) {
               setTripData(res.data);
-              if(res.data.routeCoords) {
-                  setRouteCoords(res.data.routeCoords);
-                  setMapCenter(res.data.routeCoords[0]);
-              }
-              if(res.data.passengers) {
-                  const markers = res.data.passengers.filter(p => p.coords).map(p => ({ lat: p.coords.lat, lon: p.coords.lon, name: p.name, city: p.pickupCity }));
-                  setRiderMarkers(markers);
-              }
-              socket.emit('join_ride', { roomCode: riderForm.roomCode, name: 'Watcher', isDriver: false, isWatcher: true });
+              if(res.data.routeCoords) { setRouteCoords(res.data.routeCoords); setMapCenter(res.data.routeCoords[0]); }
+              if(res.data.passengers) { setRiderMarkers(res.data.passengers.filter(p => p.coords).map(p => ({ lat: p.coords.lat, lon: p.coords.lon, name: p.name, city: p.pickupCity }))); }
+              socket.emit('join_ride', { roomCode: riderForm.roomCode, name: 'Watcher', isWatcher: true });
           }
       } catch (err) { alert("Code not found."); }
       setLoading(false);
@@ -350,14 +375,13 @@ export default function App() {
   }
 
   return (
-    <div className={`flex h-screen w-full ${theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-[#FCF9EA] text-slate-900'}`}>      
+    <div className={`flex h-screen w-full flex-col-reverse md:flex-row ${theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-[#FCF9EA] text-slate-900'}`}>      
       
       {/* --- SIDEBAR --- */}
-      <div className={`w-1/3 min-w-[350px] p-6 border-r flex flex-col transition-all duration-500 z-10 ${theme === 'dark' ? 'bg-slate-800 border-slate-700 shadow-xl' : 'bg-[#FCF9EA] border-amber-200 shadow-inner'}`}>
+      <div className={`w-full md:w-1/3 md:min-w-[380px] h-[55%] md:h-full p-6 border-t md:border-t-0 md:border-r flex flex-col transition-all duration-500 z-10 ${theme === 'dark' ? 'bg-slate-800 border-slate-700 shadow-[0_-10px_40px_rgba(0,0,0,0.5)]' : 'bg-[#FCF9EA] border-amber-200 shadow-inner'}`}>
         
         <div className="flex justify-between items-center mb-6">
-            {/* UPDATED BRANDING */}
-            <h1 className="text-4xl font-extrabold tracking-tighter text-green-500 flex items-center gap-2" style={{fontFamily: 'Inter, sans-serif'}}>
+            <h1 className="text-3xl md:text-4xl font-extrabold tracking-tighter text-green-500 flex items-center gap-2" style={{fontFamily: 'Inter, sans-serif'}}>
                 <Car strokeWidth={2.5} /> EcoRide
             </h1>
             <button 
@@ -368,40 +392,88 @@ export default function App() {
             </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto flex flex-col">
+        <div className="flex-1 overflow-y-auto flex flex-col no-scrollbar pb-20 md:pb-0">
           
           {/* --- HOME DASHBOARD --- */}
           {view === 'home' && (
-            <div className="space-y-6 mt-6 animate-fade-in flex flex-col h-full">
+            <div className="space-y-6 mt-2 animate-fade-in flex flex-col h-full">
               
-              <div className="grid grid-cols-2 gap-3">
-                  <div className="bg-gradient-to-br from-green-500 to-emerald-700 p-4 rounded-2xl text-white shadow-lg relative overflow-hidden group">
-                      <Leaf className="absolute -bottom-4 -right-4 opacity-20 group-hover:scale-125 transition-transform" size={80} />
-                      <p className="text-xs font-medium opacity-80 mb-1">CO₂ Saved (kg)</p>
-                      <h3 className="text-2xl font-bold font-mono">{stats.co2 ? stats.co2.toFixed(1) : '0.0'}</h3>
+              {/* SHARP STATS: CO2 SAVED & MONEY SPENT */}
+              <div className="grid grid-cols-2 gap-4">
+                  {/* CO2 BOX */}
+                  <div className="aspect-square bg-gradient-to-br from-emerald-600 to-lime-500 rounded-xl border-2 border-emerald-300 shadow-lg flex flex-col justify-center items-center text-center p-4 hover:scale-[1.02] transition-transform relative overflow-hidden">
+                      <div className="absolute top-0 right-0 w-[150%] h-full bg-white/10 -skew-x-12 translate-x-1/2"></div>
+                      <Leaf className="mb-2 text-white drop-shadow-md relative z-10" size={36} strokeWidth={2.5} />
+                      <h3 className="text-2xl md:text-3xl font-black text-white drop-shadow-md tracking-tight relative z-10">{stats.co2 ? stats.co2.toFixed(1) : '0.0'}</h3>
+                      <p className="text-[9px] md:text-[10px] font-bold text-emerald-50 uppercase tracking-widest mt-1 relative z-10">CO₂ Saved (kg)</p>
                   </div>
-                  <div className="bg-gradient-to-br from-blue-500 to-indigo-700 p-4 rounded-2xl text-white shadow-lg relative overflow-hidden group">
-                      <Wallet className="absolute -bottom-4 -right-4 opacity-20 group-hover:scale-125 transition-transform" size={80} />
-                      <p className="text-xs font-medium opacity-80 mb-1">Money Saved (₹)</p>
-                      <h3 className="text-2xl font-bold font-mono">₹{stats.money ? stats.money.toFixed(0) : '0'}</h3>
+
+                  {/* SPENT BOX */}
+                  <div className="aspect-square bg-gradient-to-br from-amber-500 to-orange-600 rounded-xl border-2 border-amber-300 shadow-lg flex flex-col justify-center items-center text-center p-4 hover:scale-[1.02] transition-transform relative overflow-hidden">
+                      <div className="absolute top-0 right-0 w-[150%] h-full bg-white/10 -skew-x-12 translate-x-1/2"></div>
+                      <Banknote className="mb-2 text-white drop-shadow-md relative z-10" size={36} strokeWidth={2.5} />
+                      <h3 className="text-2xl md:text-3xl font-black text-white drop-shadow-md tracking-tight relative z-10">₹{stats.money ? stats.money.toFixed(0) : '0'}</h3>
+                      <p className="text-[9px] md:text-[10px] font-bold text-amber-50 uppercase tracking-widest mt-1 relative z-10">Total Fuel Cost</p>
                   </div>
               </div>
 
-              <div className="bg-amber-100 dark:bg-slate-700/50 border-l-4 border-amber-400 p-4 rounded-r-xl italic text-sm text-slate-600 dark:text-slate-300 relative">
+              <div className="bg-amber-100 dark:bg-slate-700/50 border-l-4 border-amber-400 p-4 rounded-r-xl italic text-xs md:text-sm text-slate-600 dark:text-slate-300 relative">
                   <Quote size={16} className="text-amber-400 absolute top-2 right-2 opacity-50"/>
                   "{quote}"
               </div>
 
-              <div className="space-y-4 pt-4">
-                <button onClick={() => setView('driver')} className="w-full bg-slate-900 dark:bg-green-600 p-5 rounded-xl font-bold text-white text-lg hover:opacity-90 shadow-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02]">
+              <div className="space-y-3 pt-2">
+                <button onClick={() => setView('driver')} className="w-full bg-slate-900 dark:bg-green-600 p-4 rounded-xl font-bold text-white text-md md:text-lg hover:opacity-90 shadow-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02]">
                    <Car /> Create Trip (Driver)
                 </button>
-                <button onClick={() => setView('rider')} className="w-full bg-blue-600 p-5 rounded-xl font-bold text-white text-lg hover:bg-blue-700 shadow-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02]">
+                <button onClick={() => setView('rider')} className="w-full bg-blue-600 p-4 rounded-xl font-bold text-white text-md md:text-lg hover:bg-blue-700 shadow-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02]">
                    <User /> Join Trip (Rider)
+                </button>
+                <button onClick={() => setView('solo')} className="w-full bg-amber-500 p-4 rounded-xl font-bold text-white text-md md:text-lg hover:bg-amber-600 shadow-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02]">
+                   <Navigation /> Live Ride (Solo)
                 </button>
               </div>
 
             </div>
+          )}
+
+          {/* --- NEW SOLO VIEW (LIVE TRACKING) --- */}
+          {view === 'solo' && (
+              <div className="space-y-6 animate-fade-in">
+                  <h2 className="text-xl font-bold border-b pb-2 border-slate-600 flex items-center gap-2">
+                      <Navigation size={20} className="text-amber-500"/> Live Tracker
+                  </h2>
+                  
+                  <div className="bg-slate-100 dark:bg-slate-800 p-6 rounded-2xl text-center border-2 border-amber-500/20">
+                      <p className="text-xs uppercase font-bold text-slate-500 mb-2">Distance Travelled</p>
+                      <h3 className="text-5xl font-black text-amber-500 font-mono mb-4">{liveDistance.toFixed(2)} <span className="text-sm text-slate-400">km</span></h3>
+                      
+                      <div className="bg-white dark:bg-slate-900 p-3 rounded-lg mb-4">
+                          <p className="text-xs text-slate-400">Estimated Fuel Cost</p>
+                          <p className="text-xl font-bold text-green-500">₹{((liveDistance * parseFloat(fuelPrice)) / parseFloat(mileage)).toFixed(1)}</p>
+                      </div>
+
+                      <button 
+                        onClick={toggleLiveTracking}
+                        className={`w-full py-4 rounded-xl font-bold text-white flex items-center justify-center gap-2 shadow-lg ${isTracking ? 'bg-red-500 hover:bg-red-600' : 'bg-green-600 hover:bg-green-700'}`}
+                      >
+                          {isTracking ? <><StopCircle /> Stop Tracking</> : <><Play /> Start Tracking</>}
+                      </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                      <div className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl">
+                          <label className="text-[10px] uppercase font-bold text-slate-400">Mileage</label>
+                          <input type="number" value={mileage} onChange={e=>setMileage(e.target.value)} className="w-full bg-transparent font-bold outline-none"/>
+                      </div>
+                      <div className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl">
+                          <label className="text-[10px] uppercase font-bold text-slate-400">Fuel Price</label>
+                          <input type="number" value={fuelPrice} onChange={e=>setFuelPrice(e.target.value)} className="w-full bg-transparent font-bold outline-none"/>
+                      </div>
+                  </div>
+
+                  <button onClick={() => { setIsTracking(false); setLivePath([]); setView('home'); }} className="w-full text-slate-500 text-sm mt-4">Exit Solo Mode</button>
+              </div>
           )}
 
           {/* DRIVER INPUT SCREEN */}
@@ -417,13 +489,12 @@ export default function App() {
                 ))}
               </div>
               
-              {/* NEW CITY SEARCH INPUTS */}
               <div className="space-y-3">
-                  <CitySearch placeholder="Start City (e.g. Kochi)" value={startCity} 
+                  <CitySearch placeholder="Start City" value={startCity} 
                       onSelect={(name, coords) => { setStartCity(name); setDriverCoords(prev => ({...prev, start: coords})); }} 
                       onClear={() => { setStartCity(""); setDriverCoords(prev => ({...prev, start: null})); }} />
                       
-                  <CitySearch placeholder="End City (e.g. Trivandrum)" value={endCity} 
+                  <CitySearch placeholder="End City" value={endCity} 
                       onSelect={(name, coords) => { setEndCity(name); setDriverCoords(prev => ({...prev, end: coords})); }} 
                       onClear={() => { setEndCity(""); setDriverCoords(prev => ({...prev, end: null})); }} />
               </div>
@@ -466,7 +537,6 @@ export default function App() {
                            <div key={i} className="mb-2 p-3 bg-slate-700 rounded-lg flex justify-between items-center border-l-4 border-green-500">
                                 <div>
                                     <span className="font-bold text-white flex items-center gap-2"><MapPin size={12} className="text-green-400"/> {p.name}</span>
-                                    {/* FIXED: SHOWING LOCATION NAME */}
                                     <span className="text-[10px] text-slate-400 block ml-5">
                                         Joining from <span className="text-slate-200">{p.pickupCity || `${Number(p.startKm).toFixed(1)}km`}</span>
                                     </span>
@@ -481,7 +551,6 @@ export default function App() {
                     )}
                 </div>
                 
-                {/* FIXED: RED BUTTON FOR END TRIP */}
                 <button onClick={endTrip} className="w-full bg-red-600 hover:bg-red-700 text-white font-bold p-4 rounded-xl shadow-lg mt-auto">
                     End Trip for Everyone
                 </button>
@@ -499,7 +568,6 @@ export default function App() {
                 
                 <input placeholder="Your Name" value={riderForm.name} onChange={e => setRiderForm({...riderForm, name: e.target.value})} className="w-full p-3 bg-slate-900/10 dark:bg-slate-700 rounded-xl" />
                 
-                {/* NEW LOCATION INPUTS FOR RIDER */}
                 <div className="p-4 bg-slate-50 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 space-y-3 relative">
                     {loading && <div className="absolute inset-0 bg-black/50 flex items-center justify-center rounded-xl z-10"><span className="text-white text-xs font-bold">Validating...</span></div>}
                     
@@ -563,9 +631,10 @@ export default function App() {
                                  <p className="text-5xl font-black text-slate-800 dark:text-white">
                                      ₹{Number(myP.cost).toFixed(2)}
                                  </p>
-                                 {riderForm.isMaintenance && (
-                                     <div className="mt-3 inline-block bg-green-100 text-green-800 text-[10px] px-2 py-1 rounded-full font-bold">Includes Maintenance Fee</div>
-                                 )}
+                                 {/* UPI PAY BUTTON */}
+                                 <button onClick={() => setShowPayment(true)} className="mt-4 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-full font-bold text-xs flex items-center gap-2 mx-auto shadow-lg hover:scale-105 transition-transform">
+                                    <Banknote size={14}/> Pay Now
+                                 </button>
                              </div>
                          ))}
 
@@ -595,7 +664,7 @@ export default function App() {
              </div>
           )}
 
-          {/* WATERMARK - Positioned at Bottom */}
+          {/* WATERMARK */}
           <div className="mt-auto pt-10 pb-2 text-center">
               <p className="text-[10px] text-slate-400 dark:text-slate-600 uppercase tracking-widest font-bold">
                   Project By <span className="text-green-600 dark:text-green-400">Jesbin Shaju</span>
@@ -605,23 +674,23 @@ export default function App() {
         </div>
       </div>
 
-      {/* MAP AREA */}
-      <div className="flex-1 relative z-0">
+      {/* --- MAP AREA --- */}
+      <div className="h-[45%] md:h-full w-full md:flex-1 relative z-0 order-last md:order-none">
         <MapContainer center={mapCenter} zoom={zoom} style={{ height: "100%", width: "100%" }}>
            <ChangeView center={mapCenter} zoom={zoom} />
            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="EcoRide" />
            
-           {routeCoords.length > 0 && <Polyline positions={routeCoords} pathOptions={{ color: '#22c55e', weight: 6, opacity: 0.8 }} />}
+           {routeCoords.length > 0 && view !== 'solo' && <Polyline positions={routeCoords} pathOptions={{ color: '#22c55e', weight: 6, opacity: 0.8 }} />}
            
-           {routeCoords.length > 0 && <Marker position={routeCoords[0]}><Popup>Trip Start</Popup></Marker>}
-           {routeCoords.length > 0 && <Marker position={routeCoords[routeCoords.length - 1]}><Popup>Trip End</Popup></Marker>}
+           {/* LIVE SOLO PATH */}
+           {view === 'solo' && livePath.length > 0 && <Polyline positions={livePath} pathOptions={{ color: '#f59e0b', weight: 6 }} />}
+
+           {routeCoords.length > 0 && view !== 'solo' && <Marker position={routeCoords[0]}><Popup>Trip Start</Popup></Marker>}
+           {routeCoords.length > 0 && view !== 'solo' && <Marker position={routeCoords[routeCoords.length - 1]}><Popup>Trip End</Popup></Marker>}
 
            {riderMarkers.map((m, i) => (
                <Marker key={i} position={[m.lat, m.lon]}>
-                   <Popup className="font-bold">
-                       {m.name}<br/>
-                       <span className="text-xs text-slate-500 font-normal">{m.city || "Passenger"}</span>
-                   </Popup>
+                   <Popup className="font-bold">{m.name}<br/><span className="text-xs text-slate-500">{m.city}</span></Popup>
                </Marker>
            ))}
 
@@ -631,6 +700,34 @@ export default function App() {
                </Marker>
            )}
         </MapContainer>
+
+        {/* UPI PAYMENT MODAL OVERLAY */}
+        {showPayment && (
+            <div className="absolute inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+                <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-2xl max-w-sm w-full text-center animate-fade-in border border-slate-700">
+                    <div className="flex justify-between items-center mb-4">
+                        <h3 className="font-bold text-lg text-slate-800 dark:text-white">Pay Driver</h3>
+                        <button onClick={() => setShowPayment(false)} className="text-slate-500 hover:text-red-500"><X size={24}/></button>
+                    </div>
+                    
+                    {tripData?.passengers?.filter(p => p.name === riderForm.name).map((p, i) => (
+                        <div key={i}>
+                            <div className="bg-slate-100 dark:bg-slate-700 p-4 rounded-xl mb-4">
+                                <QrCode size={120} className="mx-auto mb-2 text-slate-800 dark:text-white opacity-80"/>
+                                <p className="text-xs text-slate-500 dark:text-slate-300">Scan via GPay / PhonePe</p>
+                            </div>
+                            <p className="font-black text-3xl mb-4 text-green-600">₹{Number(p.cost).toFixed(0)}</p>
+                            
+                            <a href={generateUPI(p.cost.toFixed(0))} className="block w-full bg-green-600 text-white font-bold py-3 rounded-xl mb-2 hover:bg-green-700 transition-colors">
+                                Open UPI App
+                            </a>
+                            <p className="text-[10px] text-slate-400">Secure payment directly to driver's UPI</p>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        )}
+
       </div>
 
     </div>
