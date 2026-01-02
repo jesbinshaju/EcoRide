@@ -9,6 +9,7 @@ import {
     Banknote, QrCode, ChevronDown, Plus, Trash2 
 } from 'lucide-react';
 import "leaflet/dist/leaflet.css";
+import logo from './assets/logo.png'; // Make sure the path matches where you saved it
 
 // --- CSS & ICON FIX ---
 delete L.Icon.Default.prototype._getIconUrl;
