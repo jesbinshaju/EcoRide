@@ -3,7 +3,11 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-
 import io from 'socket.io-client';
 import axios from 'axios';
 import L from 'leaflet';
-import { Car, User, Sun, Moon, Copy, CheckCircle, MapPin, LogOut, Navigation , Leaf, Wallet, Quote, X, Play, StopCircle, Banknote, QrCode} from 'lucide-react';
+import { 
+    Car, User, Sun, Moon, Copy, CheckCircle, MapPin, LogOut, 
+    Navigation, Leaf, Wallet, Quote, X, Play, StopCircle, 
+    Banknote, QrCode, ChevronDown, Plus, Trash2 
+} from 'lucide-react';
 import "leaflet/dist/leaflet.css";
 
 // --- CSS & ICON FIX ---
@@ -14,10 +18,8 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
 });
 
-// --- Backend Connection ---
 const socket = io.connect("http://localhost:5000");
 
-// --- HELPER: GEOMETRY ---
 const getDist = (lat1, lon1, lat2, lon2) => {
     const R = 6371; 
     const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -35,7 +37,6 @@ function ChangeView({ center, zoom }) {
   return null;
 }
 
-// --- CITY SEARCH COMPONENT ---
 const CitySearch = ({ placeholder, value, onSelect, onClear }) => {
     const [suggestions, setSuggestions] = useState([]);
     const [query, setQuery] = useState(value || "");
@@ -116,6 +117,11 @@ export default function App() {
   const [fuelPrice, setFuelPrice] = useState(105.50); 
   const [distance, setDistance] = useState(0);
 
+  // Vehicle Management
+  const [vehicles, setVehicles] = useState([]);
+  const [showVehicleList, setShowVehicleList] = useState(false);
+  const [newVehicle, setNewVehicle] = useState({ name: '', mileage: '' });
+
   // Rider Form
   const [riderForm, setRiderForm] = useState({ 
       roomCode: '', 
@@ -135,14 +141,49 @@ export default function App() {
   const [quote, setQuote] = useState("");
   const [stats, setStats] = useState({ money: 0, co2: 0 });
 
-  // LIVE SOLO TRACKING STATE
   const [isTracking, setIsTracking] = useState(false);
   const [livePath, setLivePath] = useState([]);
   const [liveDistance, setLiveDistance] = useState(0);
   const watchId = useRef(null);
-
-  // UPI MODAL STATE
   const [showPayment, setShowPayment] = useState(false);
+
+  // --- PERSISTENT VEHICLE LOGIC ---
+  useEffect(() => {
+    fetchVehicles();
+  }, []);
+
+  const fetchVehicles = async () => {
+    try {
+        const res = await axios.get('http://localhost:5000/api/vehicles');
+        setVehicles(res.data);
+    } catch (e) { console.error("Error fetching vehicles", e); }
+  };
+
+  const addVehicle = async () => {
+    if(!newVehicle.name || !newVehicle.mileage) return;
+    try {
+        const res = await axios.post('http://localhost:5000/api/vehicles', newVehicle);
+        setVehicles([...vehicles, res.data]);
+        setNewVehicle({ name: '', mileage: '' });
+    } catch (e) { console.error(e); }
+  };
+
+  const deleteVehicle = async (id) => {
+    try {
+        await axios.delete(`http://localhost:5000/api/vehicles/${id}`);
+        setVehicles(vehicles.filter(v => v._id !== id));
+    } catch (e) { console.error(e); }
+  };
+
+  // --- FUEL PRICE LOGIC ---
+  useEffect(() => {
+    const prices = {
+        'Petrol': 105.50,
+        'Diesel': 94.20,
+        'Electric': 12.50
+    };
+    setFuelPrice(prices[fuelType]);
+  }, [fuelType]);
 
   useEffect(() => {
     if (theme === 'dark') document.documentElement.classList.add('dark');
@@ -181,34 +222,25 @@ export default function App() {
     return () => socket.off('trip_update');
   }, [view]);
 
-  // --- LIVE TRACKING LOGIC (With Cost Calculation) ---
   const toggleLiveTracking = () => {
       if (isTracking) {
-          // STOP & SAVE
           navigator.geolocation.clearWatch(watchId.current);
           setIsTracking(false);
-          
           const price = parseFloat(fuelPrice) || 105;
           const mil = parseFloat(mileage) || 15;
           const moneySpent = (liveDistance * price) / mil;
-
           axios.post('http://localhost:5000/api/stats/update', { 
               money: moneySpent, 
               co2: liveDistance * 0.1 
           }).then(res => setStats(res.data)); 
-
       } else {
-          // START
           if (!navigator.geolocation) return alert("Geolocation not supported");
-          
           setLivePath([]);
           setLiveDistance(0);
           setIsTracking(true);
-
           watchId.current = navigator.geolocation.watchPosition((pos) => {
               const { latitude, longitude } = pos.coords;
               const newPoint = [latitude, longitude];
-
               setLivePath(prev => {
                   if (prev.length > 0) {
                       const last = prev[prev.length - 1];
@@ -226,12 +258,10 @@ export default function App() {
       }
   };
 
-  // --- UPI HELPER ---
   const generateUPI = (amount) => {
       return `upi://pay?pa=driver@upi&pn=EcoRideDriver&am=${amount}&cu=INR`;
   };
 
-  // --- DRIVER FUNCTIONS ---
   const handleCreateTrip = async () => {
     if (!startCity || !endCity || !mileage || !fuelPrice) return alert("Please fill in all fields");
     if (!driverCoords.start || !driverCoords.end) return alert("Please select cities");
@@ -275,7 +305,6 @@ export default function App() {
     setLoading(false);
   };
 
-  // --- RIDER FUNCTIONS ---
   const isLocationOnRoute = (userLoc, routePath, thresholdKm = 15) => {
     let minDistance = Infinity;
     let closestIndex = -1;
@@ -397,10 +426,7 @@ export default function App() {
           {/* --- HOME DASHBOARD --- */}
           {view === 'home' && (
             <div className="space-y-6 mt-2 animate-fade-in flex flex-col h-full">
-              
-              {/* SHARP STATS: CO2 SAVED & MONEY SPENT */}
               <div className="grid grid-cols-2 gap-4">
-                  {/* CO2 BOX */}
                   <div className="aspect-square bg-gradient-to-br from-emerald-600 to-lime-500 rounded-xl border-2 border-emerald-300 shadow-lg flex flex-col justify-center items-center text-center p-4 hover:scale-[1.02] transition-transform relative overflow-hidden">
                       <div className="absolute top-0 right-0 w-[150%] h-full bg-white/10 -skew-x-12 translate-x-1/2"></div>
                       <Leaf className="mb-2 text-white drop-shadow-md relative z-10" size={36} strokeWidth={2.5} />
@@ -408,7 +434,6 @@ export default function App() {
                       <p className="text-[9px] md:text-[10px] font-bold text-emerald-50 uppercase tracking-widest mt-1 relative z-10">CO₂ Saved (kg)</p>
                   </div>
 
-                  {/* SPENT BOX */}
                   <div className="aspect-square bg-gradient-to-br from-amber-500 to-orange-600 rounded-xl border-2 border-amber-300 shadow-lg flex flex-col justify-center items-center text-center p-4 hover:scale-[1.02] transition-transform relative overflow-hidden">
                       <div className="absolute top-0 right-0 w-[150%] h-full bg-white/10 -skew-x-12 translate-x-1/2"></div>
                       <Banknote className="mb-2 text-white drop-shadow-md relative z-10" size={36} strokeWidth={2.5} />
@@ -433,26 +458,22 @@ export default function App() {
                    <Navigation /> Live Ride (Solo)
                 </button>
               </div>
-
             </div>
           )}
 
-          {/* --- NEW SOLO VIEW (LIVE TRACKING) --- */}
+          {/* --- NEW SOLO VIEW --- */}
           {view === 'solo' && (
               <div className="space-y-6 animate-fade-in">
                   <h2 className="text-xl font-bold border-b pb-2 border-slate-600 flex items-center gap-2">
                       <Navigation size={20} className="text-amber-500"/> Live Tracker
                   </h2>
-                  
                   <div className="bg-slate-100 dark:bg-slate-800 p-6 rounded-2xl text-center border-2 border-amber-500/20">
                       <p className="text-xs uppercase font-bold text-slate-500 mb-2">Distance Travelled</p>
                       <h3 className="text-5xl font-black text-amber-500 font-mono mb-4">{liveDistance.toFixed(2)} <span className="text-sm text-slate-400">km</span></h3>
-                      
                       <div className="bg-white dark:bg-slate-900 p-3 rounded-lg mb-4">
                           <p className="text-xs text-slate-400">Estimated Fuel Cost</p>
                           <p className="text-xl font-bold text-green-500">₹{((liveDistance * parseFloat(fuelPrice)) / parseFloat(mileage)).toFixed(1)}</p>
                       </div>
-
                       <button 
                         onClick={toggleLiveTracking}
                         className={`w-full py-4 rounded-xl font-bold text-white flex items-center justify-center gap-2 shadow-lg ${isTracking ? 'bg-red-500 hover:bg-red-600' : 'bg-green-600 hover:bg-green-700'}`}
@@ -460,7 +481,6 @@ export default function App() {
                           {isTracking ? <><StopCircle /> Stop Tracking</> : <><Play /> Start Tracking</>}
                       </button>
                   </div>
-
                   <div className="grid grid-cols-2 gap-3">
                       <div className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl">
                           <label className="text-[10px] uppercase font-bold text-slate-400">Mileage</label>
@@ -471,7 +491,6 @@ export default function App() {
                           <input type="number" value={fuelPrice} onChange={e=>setFuelPrice(e.target.value)} className="w-full bg-transparent font-bold outline-none"/>
                       </div>
                   </div>
-
                   <button onClick={() => { setIsTracking(false); setLivePath([]); setView('home'); }} className="w-full text-slate-500 text-sm mt-4">Exit Solo Mode</button>
               </div>
           )}
@@ -483,7 +502,7 @@ export default function App() {
               <div className="grid grid-cols-3 gap-2">
                 {['Petrol', 'Diesel', 'Electric'].map(t => (
                   <button key={t} onClick={() => setFuelType(t)} 
-                    className={`py-2 text-xs font-bold rounded-lg border-2 ${fuelType === t ? 'border-green-500 bg-green-500/10' : 'border-slate-600 opacity-60 hover:opacity-100'}`}>
+                    className={`py-2 text-xs font-bold rounded-lg border-2 transition-all ${fuelType === t ? 'border-green-500 bg-green-500/10 scale-105' : 'border-slate-600 opacity-60 hover:opacity-100'}`}>
                     {t}
                   </button>
                 ))}
@@ -493,15 +512,57 @@ export default function App() {
                   <CitySearch placeholder="Start City" value={startCity} 
                       onSelect={(name, coords) => { setStartCity(name); setDriverCoords(prev => ({...prev, start: coords})); }} 
                       onClear={() => { setStartCity(""); setDriverCoords(prev => ({...prev, start: null})); }} />
-                      
                   <CitySearch placeholder="End City" value={endCity} 
                       onSelect={(name, coords) => { setEndCity(name); setDriverCoords(prev => ({...prev, end: coords})); }} 
                       onClear={() => { setEndCity(""); setDriverCoords(prev => ({...prev, end: null})); }} />
               </div>
 
+              {/* --- ADVANCED VEHICLE DROPDOWN --- */}
+              <div className="relative">
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Select Vehicle & Mileage</label>
+                  <button 
+                    onClick={() => setShowVehicleList(!showVehicleList)}
+                    className="w-full flex items-center justify-between p-3 bg-slate-100 dark:bg-slate-700 rounded-xl border border-slate-300 dark:border-slate-600 font-bold"
+                  >
+                      <span className="flex items-center gap-2"><Car size={16} className="text-green-500"/> {mileage} km/l (Manual/Selected)</span>
+                      <ChevronDown size={16} className={`transition-transform ${showVehicleList ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  {showVehicleList && (
+                    <div className="absolute top-full left-0 w-full mt-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-2xl z-50 overflow-hidden">
+                        <div className="max-h-60 overflow-y-auto">
+                            {vehicles.map((v, i) => (
+                                <div key={i} className="flex items-center justify-between p-3 hover:bg-slate-50 dark:hover:bg-slate-700 border-b border-slate-100 dark:border-slate-700">
+                                    <div className="flex-1 cursor-pointer" onClick={() => { setMileage(v.mileage); setShowVehicleList(false); }}>
+                                        <div className="flex items-center gap-3">
+                                            <div className="w-8 h-8 bg-slate-200 dark:bg-slate-600 rounded flex items-center justify-center">
+                                                <Car size={14}/>
+                                            </div>
+                                            <div>
+                                                <p className="text-sm font-bold">{v.name}</p>
+                                                <p className="text-[10px] text-slate-500">{v.mileage} km/l</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <button onClick={() => deleteVehicle(v._id)} className="text-red-400 hover:text-red-600 p-1"><Trash2 size={14}/></button>
+                                </div>
+                            ))}
+                        </div>
+                        <div className="p-3 bg-slate-50 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-700">
+                            <p className="text-[10px] font-bold text-slate-400 uppercase mb-2">Add New Vehicle</p>
+                            <div className="flex gap-2">
+                                <input placeholder="Name" value={newVehicle.name} onChange={e=>setNewVehicle({...newVehicle, name: e.target.value})} className="flex-1 text-xs p-2 rounded border bg-transparent outline-none border-slate-300 dark:border-slate-600" />
+                                <input type="number" placeholder="Km/l" value={newVehicle.mileage} onChange={e=>setNewVehicle({...newVehicle, mileage: e.target.value})} className="w-16 text-xs p-2 rounded border bg-transparent outline-none border-slate-300 dark:border-slate-600" />
+                                <button onClick={addVehicle} className="bg-green-600 text-white p-2 rounded"><Plus size={16}/></button>
+                            </div>
+                        </div>
+                    </div>
+                  )}
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                   <div>
-                      <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Mileage</label>
+                      <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Manual Mileage</label>
                       <input type="number" value={mileage} onChange={(e) => setMileage(e.target.value)} placeholder="e.g. 15"
                           className="w-full p-3 bg-slate-100 dark:bg-slate-700 rounded-lg font-bold focus:outline-green-500" />
                   </div>
@@ -531,12 +592,25 @@ export default function App() {
                 </div>
 
                 <div className="mt-4 text-left flex-1">
-                    <h3 className="text-sm font-bold text-slate-500 uppercase border-b border-slate-700 pb-2 mb-4">Current Passengers</h3>
+                    <h3 className="text-sm font-bold text-slate-500 uppercase border-b border-slate-700 pb-2 mb-4">Trip Details & Passengers</h3>
+                    
+                    {/* --- TOTAL TRIP COST REVEAL FOR DRIVER --- */}
+                    <div className="mb-4 p-4 bg-slate-900/5 dark:bg-slate-700/50 rounded-xl border border-dashed border-slate-400">
+                        <div className="flex justify-between items-center">
+                            <span className="text-xs font-bold text-slate-500 uppercase">Total Estimated Fuel Cost</span>
+                            <span className="text-xl font-black text-green-600">₹{((distance * fuelPrice)/mileage).toFixed(2)}</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-1 italic">Calculated for {distance.toFixed(1)} km</p>
+                    </div>
+
                     {tripData?.passengers && tripData.passengers.length > 0 ? (
-                        tripData.passengers.filter(p => !p.isDriver).map((p, i) => (
-                           <div key={i} className="mb-2 p-3 bg-slate-700 rounded-lg flex justify-between items-center border-l-4 border-green-500">
+                        tripData.passengers.map((p, i) => (
+                           <div key={i} className={`mb-2 p-3 rounded-lg flex justify-between items-center border-l-4 ${p.isDriver ? 'bg-blue-500/10 border-blue-500' : 'bg-slate-700 border-green-500'}`}>
                                 <div>
-                                    <span className="font-bold text-white flex items-center gap-2"><MapPin size={12} className="text-green-400"/> {p.name}</span>
+                                    <span className="font-bold text-white flex items-center gap-2">
+                                        {p.isDriver ? <Car size={12} className="text-blue-400"/> : <MapPin size={12} className="text-green-400"/>} 
+                                        {p.name} {p.isDriver && "(You)"}
+                                    </span>
                                     <span className="text-[10px] text-slate-400 block ml-5">
                                         Joining from <span className="text-slate-200">{p.pickupCity || `${Number(p.startKm).toFixed(1)}km`}</span>
                                     </span>
@@ -570,7 +644,6 @@ export default function App() {
                 
                 <div className="p-4 bg-slate-50 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 space-y-3 relative">
                     {loading && <div className="absolute inset-0 bg-black/50 flex items-center justify-center rounded-xl z-10"><span className="text-white text-xs font-bold">Validating...</span></div>}
-                    
                     <div className="flex items-center gap-2">
                         <MapPin size={16} className="text-green-500 min-w-[16px]" />
                         <CitySearch placeholder="Pickup City" value={riderForm.pickupCity} 
@@ -583,7 +656,6 @@ export default function App() {
                             onSelect={(name, coords) => { setRiderForm(prev => ({...prev, dropCity: name})); setRiderRouteData(prev => ({...prev, dropCoords: coords})); }} 
                             onClear={() => setRiderForm(prev => ({...prev, dropCity: ''}))}/>
                     </div>
-                    
                     {!riderRouteData.startKm ? (
                         <button onClick={validateRiderRoute} className="w-full bg-slate-600 hover:bg-slate-700 text-white py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-2">
                             <Navigation size={14}/> Validate Location & Route
@@ -601,7 +673,6 @@ export default function App() {
                         I agree to pay <span className="font-bold text-green-600">2% extra</span> as Maintenance Fee.
                     </label>
                 </div>
-
                 <button onClick={joinRide} disabled={!riderRouteData.startKm} className={`w-full p-4 rounded-xl font-bold text-white shadow-lg transition-all ${riderRouteData.startKm ? 'bg-blue-600 hover:bg-blue-700' : 'bg-slate-600 opacity-50 cursor-not-allowed'}`}>
                     Join Room
                 </button>
@@ -615,30 +686,23 @@ export default function App() {
                  <h2 className="text-xl font-bold text-green-600 flex items-center gap-2">
                      <CheckCircle size={20}/> Trip Active
                  </h2>
-
                  {tripData ? (
                      <div className="animate-fade-in space-y-4">
-                         {/* Status Bar */}
                          <div className="flex justify-between items-center bg-slate-100 dark:bg-slate-700 p-3 rounded-lg">
                              <span className="text-xs font-mono text-gray-500">Room: {riderForm.roomCode}</span>
                              <span className="text-xs bg-green-500 text-white px-2 py-1 rounded">Live</span>
                          </div>
-
-                         {/* MY COST CARD */}
                          {tripData.passengers && tripData.passengers.filter(p => p.name === riderForm.name).map((myP, i) => (
                              <div key={i} className="text-center py-8 bg-white dark:bg-slate-800 rounded-xl shadow-lg border-t-4 border-green-500">
                                  <p className="text-xs text-gray-400 uppercase font-bold tracking-widest mb-2">Your Fair Share</p>
                                  <p className="text-5xl font-black text-slate-800 dark:text-white">
                                      ₹{Number(myP.cost).toFixed(2)}
                                  </p>
-                                 {/* UPI PAY BUTTON */}
                                  <button onClick={() => setShowPayment(true)} className="mt-4 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-full font-bold text-xs flex items-center gap-2 mx-auto shadow-lg hover:scale-105 transition-transform">
                                     <Banknote size={14}/> Pay Now
                                  </button>
                              </div>
                          ))}
-
-                         {/* PASSENGER LIST */}
                          <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-xl">
                              <h4 className="text-xs font-bold text-gray-400 uppercase mb-3">Trip Members</h4>
                              {tripData.passengers.map((p, idx) => (
@@ -657,20 +721,17 @@ export default function App() {
                         <p className="font-bold">Waiting for Trip Data...</p>
                      </div>
                  )}
-                 
                  <button onClick={leaveRide} className="w-full bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all mt-6">
                     <LogOut size={16} /> Leave Trip
                  </button>
              </div>
           )}
 
-          {/* WATERMARK */}
           <div className="mt-auto pt-10 pb-2 text-center">
               <p className="text-[10px] text-slate-400 dark:text-slate-600 uppercase tracking-widest font-bold">
                   Project By <span className="text-green-600 dark:text-green-400">Jesbin Shaju</span>
               </p>
           </div>
-
         </div>
       </div>
 
@@ -679,21 +740,15 @@ export default function App() {
         <MapContainer center={mapCenter} zoom={zoom} style={{ height: "100%", width: "100%" }}>
            <ChangeView center={mapCenter} zoom={zoom} />
            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="EcoRide" />
-           
            {routeCoords.length > 0 && view !== 'solo' && <Polyline positions={routeCoords} pathOptions={{ color: '#22c55e', weight: 6, opacity: 0.8 }} />}
-           
-           {/* LIVE SOLO PATH */}
            {view === 'solo' && livePath.length > 0 && <Polyline positions={livePath} pathOptions={{ color: '#f59e0b', weight: 6 }} />}
-
            {routeCoords.length > 0 && view !== 'solo' && <Marker position={routeCoords[0]}><Popup>Trip Start</Popup></Marker>}
            {routeCoords.length > 0 && view !== 'solo' && <Marker position={routeCoords[routeCoords.length - 1]}><Popup>Trip End</Popup></Marker>}
-
            {riderMarkers.map((m, i) => (
                <Marker key={i} position={[m.lat, m.lon]}>
                    <Popup className="font-bold">{m.name}<br/><span className="text-xs text-slate-500">{m.city}</span></Popup>
                </Marker>
            ))}
-
            {view === 'rider' && riderRouteData.pickupCoords && (
                <Marker position={[riderRouteData.pickupCoords.lat, riderRouteData.pickupCoords.lon]} opacity={0.6}>
                    <Popup>Your Pickup</Popup>
@@ -701,7 +756,6 @@ export default function App() {
            )}
         </MapContainer>
 
-        {/* UPI PAYMENT MODAL OVERLAY */}
         {showPayment && (
             <div className="absolute inset-0 z-[9999] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
                 <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-2xl max-w-sm w-full text-center animate-fade-in border border-slate-700">
@@ -709,7 +763,6 @@ export default function App() {
                         <h3 className="font-bold text-lg text-slate-800 dark:text-white">Pay Driver</h3>
                         <button onClick={() => setShowPayment(false)} className="text-slate-500 hover:text-red-500"><X size={24}/></button>
                     </div>
-                    
                     {tripData?.passengers?.filter(p => p.name === riderForm.name).map((p, i) => (
                         <div key={i}>
                             <div className="bg-slate-100 dark:bg-slate-700 p-4 rounded-xl mb-4">
@@ -717,7 +770,6 @@ export default function App() {
                                 <p className="text-xs text-slate-500 dark:text-slate-300">Scan via GPay / PhonePe</p>
                             </div>
                             <p className="font-black text-3xl mb-4 text-green-600">₹{Number(p.cost).toFixed(0)}</p>
-                            
                             <a href={generateUPI(p.cost.toFixed(0))} className="block w-full bg-green-600 text-white font-bold py-3 rounded-xl mb-2 hover:bg-green-700 transition-colors">
                                 Open UPI App
                             </a>
@@ -727,9 +779,7 @@ export default function App() {
                 </div>
             </div>
         )}
-
       </div>
-
     </div>
   );
 }

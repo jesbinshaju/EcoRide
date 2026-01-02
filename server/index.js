@@ -3,7 +3,7 @@ import http from 'http';
 import { Server } from 'socket.io';
 import mongoose from 'mongoose';
 import cors from 'cors';
-import Stats from './models/Stats.js'; // Ensure this model exists in your folder
+import Stats from './models/Stats.js'; 
 import 'dotenv/config';
 
 const app = express();
@@ -15,19 +15,39 @@ const io = new Server(server, {
     cors: { origin: "*" }
 });
 
-// --- DATABASE CONNECTION ---
 const mongoURI = process.env.MONGODB_URI;
-
 if (!mongoURI) {
   console.error('❌ MONGODB_URI is missing from .env');
   process.exit(1);
 }
 
 mongoose.connect(mongoURI)
-  .then(() => console.log("✅ MongoDB Connected!"))
+  .then(async () => {
+      console.log("✅ MongoDB Connected!");
+      // Seed initial vehicles if list is empty
+      const count = await Vehicle.countDocuments();
+      if (count === 0) {
+          const initialVehicles = [
+              { name: "Santro Xing", mileage: 20 },
+              { name: "Honda City", mileage: 17 },
+              { name: "Passion Pro", mileage: 38 },
+              { name: "Honda Activa", mileage: 45 },
+              { name: "Royal Enfield Bullet", mileage: 30 },
+              { name: "Mahindra CL 540D", mileage: 25 }
+          ];
+          await Vehicle.insertMany(initialVehicles);
+          console.log("🚗 Seeded initial vehicles");
+      }
+  })
   .catch(err => console.error("❌ DB Error:", err));
 
-// --- SCHEMA ---
+// --- SCHEMAS ---
+const VehicleSchema = new mongoose.Schema({
+    name: String,
+    mileage: Number
+});
+const Vehicle = mongoose.model('Vehicle', VehicleSchema);
+
 const TripSchema = new mongoose.Schema({
     roomCode: String,
     totalDist: Number,
@@ -40,12 +60,32 @@ const TripSchema = new mongoose.Schema({
         endKm: Number,
         cost: Number,
         isDriver: Boolean,
-        pickupCity: String
+        pickupCity: String,
+        isMaintenance: Boolean
     }]
 });
 const Trip = mongoose.model('Trip', TripSchema);
 
 // --- API ROUTES ---
+
+// Vehicle Routes
+app.get('/api/vehicles', async (req, res) => {
+    const v = await Vehicle.find();
+    res.json(v);
+});
+
+app.post('/api/vehicles', async (req, res) => {
+    const newV = new Vehicle(req.body);
+    await newV.save();
+    res.json(newV);
+});
+
+app.delete('/api/vehicles/:id', async (req, res) => {
+    await Vehicle.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+});
+
+// Trip Routes
 app.post('/api/create-trip', async (req, res) => {
     try {
         const { roomCode, totalDist, fuelPrice, mileage, routeCoords } = req.body;
@@ -82,36 +122,24 @@ app.post('/api/stats/update', async (req, res) => {
     res.json(stats);
 });
 
-// --- IN-MEMORY STATE ---
-const trips = {};
-
-// --- COST CALCULATION LOGIC (The Fix) ---
+// --- COST CALCULATION LOGIC ---
 const recalculateCosts = (tripData) => {
-    // 1. Sort all unique geographic points (Start, Drops, Pickups, End)
     let points = [0, tripData.totalDist];
     tripData.passengers.forEach(p => {
         if(p.startKm !== null) points.push(p.startKm);
         if(p.endKm !== null) points.push(p.endKm);
     });
-    // Remove duplicates and sort numerically
     points = [...new Set(points)].sort((a, b) => a - b);
 
-    // 2. Cost Per Km for the car
     const costPerKm = tripData.fuelPrice / tripData.mileage;
-
-    // 3. Reset everyone's cost
     tripData.passengers.forEach(p => p.cost = 0);
 
-    // 4. Iterate through every segment
     for (let i = 0; i < points.length - 1; i++) {
         const segmentStart = points[i];
         const segmentEnd = points[i + 1];
         const distance = segmentEnd - segmentStart;
-
         if (distance <= 0) continue;
 
-        // Find who is in the car for this specific segment
-        // A passenger is "active" if they started before/at segment start AND get off after/at segment end
         const activePassengers = tripData.passengers.filter(p => 
             p.startKm <= segmentStart && p.endKm >= segmentEnd
         );
@@ -119,15 +147,12 @@ const recalculateCosts = (tripData) => {
         if (activePassengers.length > 0) {
             const segmentCost = distance * costPerKm;
             const splitCost = segmentCost / activePassengers.length;
-
-            // Add the split cost to everyone in the car
             activePassengers.forEach(p => {
                 p.cost += splitCost;
             });
         }
     }
 
-    // 5. Apply Maintenance Fee (2%) logic
     tripData.passengers.forEach(p => {
         if (p.isMaintenance && !p.isDriver) {
             p.cost = p.cost * 1.02; 
@@ -138,13 +163,13 @@ const recalculateCosts = (tripData) => {
 };
 
 // --- SOCKET LOGIC ---
-io.on('connection', (socket) => {
-    
-    socket.on('join_ride', async (data) => {
-        socket.join(data.roomCode);
-        const { roomCode, name, startKm, endKm, coords, isDriver, pickupCity, isMaintenance, isWatcher } = data;
+const trips = {};
 
-        // If trip not in memory, fetch from DB
+io.on('connection', (socket) => {
+    socket.on('join_ride', async (data) => {
+        const { roomCode, name, startKm, endKm, coords, isDriver, pickupCity, isMaintenance, isWatcher } = data;
+        socket.join(roomCode);
+
         if (!trips[roomCode]) {
             const dbTrip = await Trip.findOne({ roomCode });
             if (dbTrip) {
@@ -153,24 +178,19 @@ io.on('connection', (socket) => {
                     fuelPrice: dbTrip.fuelPrice,
                     mileage: dbTrip.mileage,
                     routeCoords: dbTrip.routeCoords,
-                    passengers: [] // Re-populate passengers as they join
+                    passengers: []
                 };
             } else {
-                // Should not happen if create-trip was called, but safety fallback
-                if(!isWatcher) socket.emit('error', 'Trip not found');
                 return;
             }
         }
 
         const trip = trips[roomCode];
-
         if (isWatcher) {
             socket.emit('trip_update', trip);
             return;
         }
 
-        // Add/Update Passenger
-        const existingIdx = trip.passengers.findIndex(p => p.name === name);
         const passengerData = {
             name,
             startKm: parseFloat(startKm),
@@ -180,19 +200,18 @@ io.on('connection', (socket) => {
             pickupCity: pickupCity || (isDriver ? 'Start' : 'Unknown'),
             isMaintenance: !!isMaintenance,
             socketId: socket.id,
-            cost: 0 // Will be calculated below
+            cost: 0 
         };
 
+        const existingIdx = trip.passengers.findIndex(p => p.name === name);
         if (existingIdx !== -1) {
-            trip.passengers[existingIdx] = { ...trip.passengers[existingIdx], ...passengerData };
+            trip.passengers[existingIdx] = passengerData;
         } else {
             trip.passengers.push(passengerData);
         }
 
-        // RECALCULATE COSTS
         const updatedTrip = recalculateCosts(trip);
         trips[roomCode] = updatedTrip;
-
         io.to(roomCode).emit('trip_update', updatedTrip);
     });
 
