@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import "leaflet/dist/leaflet.css";
 import logo from './assets/logo.png'; // Make sure the path matches where you saved it
+import API_CONFIG from './config.js';
 
 // --- CSS & ICON FIX ---
 delete L.Icon.Default.prototype._getIconUrl;
@@ -19,7 +20,7 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
 });
 
-const socket = io.connect("http://localhost:5000");
+const socket = io.connect(API_CONFIG.SOCKET_URL);
 
 const getDist = (lat1, lon1, lat2, lon2) => {
     const R = 6371; 
@@ -94,7 +95,9 @@ const CitySearch = ({ placeholder, value, onSelect, onClear }) => {
 };
 
 export default function App() {
-  const [view, setView] = useState('home'); 
+  const [view, setView] = useState('home');
+  const [viewHistory, setViewHistory] = useState(['home']); 
+  const [historyIndex, setHistoryIndex] = useState(0);
   const [tripData, setTripData] = useState(null);
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
   const [fuelType, setFuelType] = useState('Petrol');
@@ -155,7 +158,7 @@ export default function App() {
 
   const fetchVehicles = async () => {
     try {
-        const res = await axios.get('http://localhost:5000/api/vehicles');
+        const res = await axios.get(`${API_CONFIG.BASE_URL}/api/vehicles`);
         setVehicles(res.data);
     } catch (e) { console.error("Error fetching vehicles", e); }
   };
@@ -163,7 +166,7 @@ export default function App() {
   const addVehicle = async () => {
     if(!newVehicle.name || !newVehicle.mileage) return;
     try {
-        const res = await axios.post('http://localhost:5000/api/vehicles', newVehicle);
+        const res = await axios.post(`${API_CONFIG.BASE_URL}/api/vehicles`, newVehicle);
         setVehicles([...vehicles, res.data]);
         setNewVehicle({ name: '', mileage: '' });
     } catch (e) { console.error(e); }
@@ -171,7 +174,7 @@ export default function App() {
 
   const deleteVehicle = async (id) => {
     try {
-        await axios.delete(`http://localhost:5000/api/vehicles/${id}`);
+        await axios.delete(`${API_CONFIG.BASE_URL}/api/vehicles/${id}`);
         setVehicles(vehicles.filter(v => v._id !== id));
     } catch (e) { console.error(e); }
   };
@@ -192,6 +195,38 @@ export default function App() {
     localStorage.setItem('theme', theme);
   }, [theme]);
 
+  // Custom navigation function that manages history
+  const navigateTo = (newView) => {
+    setViewHistory(prev => {
+      const newHistory = prev.slice(0, historyIndex + 1);
+      newHistory.push(newView);
+      setHistoryIndex(newHistory.length - 1);
+      return newHistory;
+    });
+    setView(newView);
+  };
+
+  // Handle browser back/forward buttons
+  useEffect(() => {
+    const handlePopState = (event) => {
+      if (event.state && event.state.view) {
+        const newIndex = viewHistory.indexOf(event.state.view);
+        if (newIndex !== -1) {
+          setHistoryIndex(newIndex);
+          setView(event.state.view);
+        }
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [viewHistory]);
+
+  // Push state to browser history whenever view changes
+  useEffect(() => {
+    window.history.pushState({ view }, '', window.location.href);
+  }, [view]);
+
   useEffect(() => {
       const ecoQuotes = [
           "Ride together, save together.",
@@ -201,7 +236,7 @@ export default function App() {
       ];
       setQuote(ecoQuotes[Math.floor(Math.random() * ecoQuotes.length)]);
 
-      axios.get('http://localhost:5000/api/stats')
+      axios.get(`${API_CONFIG.BASE_URL}/api/stats`)
         .then(res => setStats(res.data))
         .catch(err => console.log("DB Stats Error", err));
   }, []);
@@ -230,7 +265,7 @@ export default function App() {
           const price = parseFloat(fuelPrice) || 105;
           const mil = parseFloat(mileage) || 15;
           const moneySpent = (liveDistance * price) / mil;
-          axios.post('http://localhost:5000/api/stats/update', { 
+          axios.post(`${API_CONFIG.BASE_URL}/api/stats/update`, { 
               money: moneySpent, 
               co2: liveDistance * 0.1 
           }).then(res => setStats(res.data)); 
@@ -289,7 +324,7 @@ export default function App() {
         const code = Math.random().toString(36).substr(2, 6).toUpperCase();
         setRoomCode(code);
 
-        await axios.post('http://localhost:5000/api/create-trip', {
+        await axios.post(`${API_CONFIG.BASE_URL}/api/create-trip`, {
           roomCode: code, 
           totalDist: distKm, 
           fuelPrice: parseFloat(fuelPrice), 
@@ -355,7 +390,7 @@ export default function App() {
       startKm: riderRouteData.startKm, endKm: riderRouteData.endKm,
       coords: riderRouteData.pickupCoords, pickupCity: riderForm.pickupCity, isMaintenance: riderForm.isMaintenance 
     });
-    setView('active_rider'); 
+    navigateTo('active_rider'); 
   };
 
   const endTrip = async () => {
@@ -366,12 +401,12 @@ export default function App() {
             const mil = parseFloat(mileage) || 15;
             const moneySpent = (finalDist * price) / mil;
 
-            await axios.post('http://localhost:5000/api/stats/update', { money: moneySpent, co2: finalDist * 0.1 });
-            const res = await axios.get('http://localhost:5000/api/stats');
+            await axios.post(`${API_CONFIG.BASE_URL}/api/stats/update`, { money: moneySpent, co2: finalDist * 0.1 });
+            const res = await axios.get(`${API_CONFIG.BASE_URL}/api/stats`);
             setStats(res.data);
         } catch(e) {}
         socket.emit('end_trip', roomCode);
-        setTripData(null); setRouteCoords([]); setRiderMarkers([]); setIsTripCreated(false); setLivePath([]); setIsTracking(false); setView('home');
+        setTripData(null); setRouteCoords([]); setRiderMarkers([]); setIsTripCreated(false); setLivePath([]); setIsTracking(false); navigateTo('home');
       }
   }
 
@@ -380,7 +415,7 @@ export default function App() {
           socket.emit('leave_trip', { roomCode: riderForm.roomCode, name: riderForm.name });
           setTripData(null); setRouteCoords([]); setRiderMarkers([]); 
           setRiderRouteData({ startKm: null, endKm: null, pickupCoords: null, dropCoords: null });
-          setView('home');
+          navigateTo('home');
       }
   };
 
@@ -388,7 +423,7 @@ export default function App() {
       if(!riderForm.roomCode) return alert("Enter Code");
       setLoading(true);
       try {
-          const res = await axios.get(`http://localhost:5000/api/trip/${riderForm.roomCode}`);
+          const res = await axios.get(`${API_CONFIG.BASE_URL}/api/trip/${riderForm.roomCode}`);
           if(res.data) {
               setTripData(res.data);
               if(res.data.routeCoords) { setRouteCoords(res.data.routeCoords); setMapCenter(res.data.routeCoords[0]); }
@@ -414,12 +449,28 @@ export default function App() {
             <h1 className="text-3xl md:text-4xl font-extrabold tracking-tighter text-green-500 flex items-center gap-2" style={{fontFamily: 'Inter, sans-serif'}}>
                 <Car strokeWidth={2.5} /> EcoRide
             </h1>
-            <button 
-                onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} 
-                className={`p-2 rounded-full transition-all ${theme === 'dark' ? 'bg-slate-700 text-yellow-400' : 'bg-slate-200 text-slate-600 hover:bg-slate-300'}`}
-            >
-                {theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}
-            </button>
+            <div className="flex items-center gap-2">
+                <button 
+                    onClick={() => window.history.back()} 
+                    className={`p-2 rounded-full transition-all ${theme === 'dark' ? 'bg-slate-700 hover:bg-slate-600 text-slate-300' : 'bg-slate-200 hover:bg-slate-300 text-slate-600'}`}
+                    title="Back"
+                >
+                    ←
+                </button>
+                <button 
+                    onClick={() => window.history.forward()} 
+                    className={`p-2 rounded-full transition-all ${theme === 'dark' ? 'bg-slate-700 hover:bg-slate-600 text-slate-300' : 'bg-slate-200 hover:bg-slate-300 text-slate-600'}`}
+                    title="Forward"
+                >
+                    →
+                </button>
+                <button 
+                    onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} 
+                    className={`p-2 rounded-full transition-all ${theme === 'dark' ? 'bg-slate-700 text-yellow-400' : 'bg-slate-200 text-slate-600 hover:bg-slate-300'}`}
+                >
+                    {theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}
+                </button>
+            </div>
         </div>
 
         <div className="flex-1 overflow-y-auto flex flex-col no-scrollbar pb-20 md:pb-0">
@@ -449,13 +500,13 @@ export default function App() {
               </div>
 
               <div className="space-y-3 pt-2">
-                <button onClick={() => setView('driver')} className="w-full bg-slate-900 dark:bg-green-600 p-4 rounded-xl font-bold text-white text-md md:text-lg hover:opacity-90 shadow-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02]">
+                <button onClick={() => navigateTo('driver')} className="w-full bg-slate-900 dark:bg-green-600 p-4 rounded-xl font-bold text-white text-md md:text-lg hover:opacity-90 shadow-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02]">
                    <Car /> Create Trip (Driver)
                 </button>
-                <button onClick={() => setView('rider')} className="w-full bg-blue-600 p-4 rounded-xl font-bold text-white text-md md:text-lg hover:bg-blue-700 shadow-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02]">
+                <button onClick={() => navigateTo('rider')} className="w-full bg-blue-600 p-4 rounded-xl font-bold text-white text-md md:text-lg hover:bg-blue-700 shadow-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02]">
                    <User /> Join Trip (Rider)
                 </button>
-                <button onClick={() => setView('solo')} className="w-full bg-amber-500 p-4 rounded-xl font-bold text-white text-md md:text-lg hover:bg-amber-600 shadow-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02]">
+                <button onClick={() => navigateTo('solo')} className="w-full bg-amber-500 p-4 rounded-xl font-bold text-white text-md md:text-lg hover:bg-amber-600 shadow-xl flex items-center justify-center gap-3 transition-transform hover:scale-[1.02]">
                    <Navigation /> Live Ride (Solo)
                 </button>
               </div>
@@ -492,7 +543,7 @@ export default function App() {
                           <input type="number" value={fuelPrice} onChange={e=>setFuelPrice(e.target.value)} className="w-full bg-transparent font-bold outline-none"/>
                       </div>
                   </div>
-                  <button onClick={() => { setIsTracking(false); setLivePath([]); setView('home'); }} className="w-full text-slate-500 text-sm mt-4">Exit Solo Mode</button>
+                  <button onClick={() => { setIsTracking(false); setLivePath([]); navigateTo('home'); }} className="w-full text-slate-500 text-sm mt-4">Exit Solo Mode</button>
               </div>
           )}
 
@@ -577,7 +628,7 @@ export default function App() {
                   className="w-full py-4 mt-4 bg-green-600 hover:bg-green-700 text-white font-bold rounded-xl shadow-lg transition-all flex justify-center items-center gap-2">
                   {loading ? "Calculating..." : "CREATE TRIP & GENERATE CODE"}
               </button>
-              <button onClick={() => setView('home')} className="w-full text-slate-500 text-xs mt-2">Cancel</button>
+              <button onClick={() => navigateTo('home')} className="w-full text-slate-500 text-xs mt-2">Cancel</button>
             </div>
           )}
 
@@ -677,7 +728,7 @@ export default function App() {
                 <button onClick={joinRide} disabled={!riderRouteData.startKm} className={`w-full p-4 rounded-xl font-bold text-white shadow-lg transition-all ${riderRouteData.startKm ? 'bg-blue-600 hover:bg-blue-700' : 'bg-slate-600 opacity-50 cursor-not-allowed'}`}>
                     Join Room
                 </button>
-                <button onClick={() => setView('home')} className="w-full text-slate-500 text-xs text-center">Back</button>
+                <button onClick={() => navigateTo('home')} className="w-full text-slate-500 text-xs text-center">Back</button>
              </div>
           )}
 
