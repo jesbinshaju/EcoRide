@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import io from 'socket.io-client';
 import axios from 'axios';
@@ -6,10 +6,10 @@ import L from 'leaflet';
 import { 
     Car, User, Sun, Moon, Copy, CheckCircle, MapPin, LogOut, 
     Navigation, Leaf, Wallet, Quote, X, Play, StopCircle, 
-    Banknote, QrCode, ChevronDown, Plus, Trash2 
+    Banknote, QrCode, ChevronDown, Plus, Trash2, GripHorizontal 
 } from 'lucide-react';
 import "leaflet/dist/leaflet.css";
-import logo from './assets/logo.png'; // Make sure the path matches where you saved it
+import logo from './assets/logo.png'; 
 import API_CONFIG from './config.js';
 
 // --- CSS & ICON FIX ---
@@ -151,6 +151,46 @@ export default function App() {
   const watchId = useRef(null);
   const [showPayment, setShowPayment] = useState(false);
 
+  // --- NEW PERSISTENCE & UI REFS ---
+  const scrollRef = useRef(null);
+  const [sidebarHeight, setSidebarHeight] = useState(55); // Mobile Height %
+  const [isDragging, setIsDragging] = useState(false);
+
+  // 1. Reset scroll whenever view changes
+  useEffect(() => {
+    if (scrollRef.current) {
+        scrollRef.current.scrollTo(0, 0);
+    }
+  }, [view]);
+
+  // 2. Mobile Drag Resize Logic
+  const onTouchStart = () => setIsDragging(true);
+  const onTouchMove = useCallback((e) => {
+    if (!isDragging) return;
+    const touchY = e.touches ? e.touches[0].clientY : e.clientY;
+    const heightPercent = ((window.innerHeight - touchY) / window.innerHeight) * 100;
+    if (heightPercent > 20 && heightPercent < 95) {
+        setSidebarHeight(heightPercent);
+    }
+  }, [isDragging]);
+
+  const onTouchEnd = () => setIsDragging(false);
+
+  useEffect(() => {
+    if (isDragging) {
+        window.addEventListener('mousemove', onTouchMove);
+        window.addEventListener('mouseup', onTouchEnd);
+        window.addEventListener('touchmove', onTouchMove);
+        window.addEventListener('touchend', onTouchEnd);
+    }
+    return () => {
+        window.removeEventListener('mousemove', onTouchMove);
+        window.removeEventListener('mouseup', onTouchEnd);
+        window.removeEventListener('touchmove', onTouchMove);
+        window.removeEventListener('touchend', onTouchEnd);
+    };
+  }, [isDragging, onTouchMove]);
+
   // --- PERSISTENT VEHICLE LOGIC ---
   useEffect(() => {
     fetchVehicles();
@@ -236,12 +276,22 @@ export default function App() {
       ];
       setQuote(ecoQuotes[Math.floor(Math.random() * ecoQuotes.length)]);
 
-      axios.get(`${API_CONFIG.BASE_URL}/api/stats`)
-        .then(res => setStats(res.data))
-        .catch(err => console.log("DB Stats Error", err));
+      // Initial stats fetch
+      updateGlobalStats();
   }, []);
 
+  const updateGlobalStats = () => {
+    axios.get(`${API_CONFIG.BASE_URL}/api/stats`)
+      .then(res => setStats(res.data))
+      .catch(err => console.log("DB Stats Error", err));
+  };
+
   useEffect(() => {
+    // Listen for global stat updates from other users via socket
+    socket.on('stats_updated', (newStats) => {
+        setStats(newStats);
+    });
+
     socket.on('trip_update', (data) => {
         setTripData(data);
         if(data.routeCoords && data.routeCoords.length > 0 && view !== 'solo') {
@@ -255,7 +305,10 @@ export default function App() {
             setRiderMarkers(markers);
         }
     });
-    return () => socket.off('trip_update');
+    return () => {
+        socket.off('trip_update');
+        socket.off('stats_updated');
+    };
   }, [view]);
 
   const toggleLiveTracking = () => {
@@ -265,6 +318,8 @@ export default function App() {
           const price = parseFloat(fuelPrice) || 105;
           const mil = parseFloat(mileage) || 15;
           const moneySpent = (liveDistance * price) / mil;
+          
+          // PERSISTENT UPDATE: Send to backend
           axios.post(`${API_CONFIG.BASE_URL}/api/stats/update`, { 
               money: moneySpent, 
               co2: liveDistance * 0.1 
@@ -401,10 +456,14 @@ export default function App() {
             const mil = parseFloat(mileage) || 15;
             const moneySpent = (finalDist * price) / mil;
 
-            await axios.post(`${API_CONFIG.BASE_URL}/api/stats/update`, { money: moneySpent, co2: finalDist * 0.1 });
-            const res = await axios.get(`${API_CONFIG.BASE_URL}/api/stats`);
-            setStats(res.data);
-        } catch(e) {}
+            // PERSISTENT GLOBAL UPDATE
+            await axios.post(`${API_CONFIG.BASE_URL}/api/stats/update`, { 
+                money: moneySpent, 
+                co2: finalDist * 0.1 
+            });
+            updateGlobalStats();
+        } catch(e) { console.error("Stats update failed", e); }
+        
         socket.emit('end_trip', roomCode);
         setTripData(null); setRouteCoords([]); setRiderMarkers([]); setIsTripCreated(false); setLivePath([]); setIsTracking(false); navigateTo('home');
       }
@@ -440,12 +499,23 @@ export default function App() {
   }
 
   return (
-    <div className={`flex h-screen w-full flex-col-reverse md:flex-row ${theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-[#FCF9EA] text-slate-900'}`}>      
+    <div className={`flex h-screen w-full flex-col-reverse md:flex-row overflow-hidden ${theme === 'dark' ? 'bg-slate-900 text-white' : 'bg-[#FCF9EA] text-slate-900'}`}>      
       
       {/* --- SIDEBAR --- */}
-      <div className={`w-full md:w-1/3 md:min-w-[380px] h-[55%] md:h-full p-6 border-t md:border-t-0 md:border-r flex flex-col transition-all duration-500 z-10 ${theme === 'dark' ? 'bg-slate-800 border-slate-700 shadow-[0_-10px_40px_rgba(0,0,0,0.5)]' : 'bg-[#FCF9EA] border-amber-200 shadow-inner'}`}>
+      <div 
+        style={{ height: window.innerWidth < 768 ? `${sidebarHeight}%` : '100%' }}
+        className={`w-full md:w-1/3 md:min-w-[380px] p-6 border-t md:border-t-0 md:border-r flex flex-col transition-[height] duration-75 ease-out z-10 relative ${theme === 'dark' ? 'bg-slate-800 border-slate-700 shadow-[0_-10px_40px_rgba(0,0,0,0.5)]' : 'bg-[#FCF9EA] border-amber-200 shadow-inner'}`}>
         
-        <div className="flex justify-between items-center mb-6">
+        {/* Mobile Drag Handle */}
+        <div 
+            onMouseDown={onTouchStart}
+            onTouchStart={onTouchStart}
+            className="md:hidden absolute top-0 left-0 w-full h-8 flex items-center justify-center cursor-grab active:cursor-grabbing"
+        >
+            <div className="w-12 h-1.5 bg-slate-400/30 rounded-full"></div>
+        </div>
+
+        <div className="flex justify-between items-center mb-6 mt-2 md:mt-0">
             <h1 className="text-3xl md:text-4xl font-extrabold tracking-tighter text-green-500 flex items-center gap-2" style={{fontFamily: 'Inter, sans-serif'}}>
                 <Car strokeWidth={2.5} /> EcoRide
             </h1>
@@ -458,13 +528,6 @@ export default function App() {
                     ←
                 </button>
                 <button 
-                    onClick={() => window.history.forward()} 
-                    className={`p-2 rounded-full transition-all ${theme === 'dark' ? 'bg-slate-700 hover:bg-slate-600 text-slate-300' : 'bg-slate-200 hover:bg-slate-300 text-slate-600'}`}
-                    title="Forward"
-                >
-                    →
-                </button>
-                <button 
                     onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} 
                     className={`p-2 rounded-full transition-all ${theme === 'dark' ? 'bg-slate-700 text-yellow-400' : 'bg-slate-200 text-slate-600 hover:bg-slate-300'}`}
                 >
@@ -473,7 +536,8 @@ export default function App() {
             </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto flex flex-col no-scrollbar pb-20 md:pb-0">
+        {/* This is the container we reset the scroll for */}
+        <div ref={scrollRef} className="flex-1 overflow-y-auto flex flex-col no-scrollbar pb-20 md:pb-0">
           
           {/* --- HOME DASHBOARD --- */}
           {view === 'home' && (
@@ -513,7 +577,7 @@ export default function App() {
             </div>
           )}
 
-          {/* --- NEW SOLO VIEW --- */}
+          {/* --- SOLO VIEW --- */}
           {view === 'solo' && (
               <div className="space-y-6 animate-fade-in">
                   <h2 className="text-xl font-bold border-b pb-2 border-slate-600 flex items-center gap-2">
@@ -569,7 +633,6 @@ export default function App() {
                       onClear={() => { setEndCity(""); setDriverCoords(prev => ({...prev, end: null})); }} />
               </div>
 
-              {/* --- ADVANCED VEHICLE DROPDOWN --- */}
               <div className="relative">
                   <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Select Vehicle & Mileage</label>
                   <button 
@@ -646,7 +709,6 @@ export default function App() {
                 <div className="mt-4 text-left flex-1">
                     <h3 className="text-sm font-bold text-slate-500 uppercase border-b border-slate-700 pb-2 mb-4">Trip Details & Passengers</h3>
                     
-                    {/* --- TOTAL TRIP COST REVEAL FOR DRIVER --- */}
                     <div className="mb-4 p-4 bg-slate-900/5 dark:bg-slate-700/50 rounded-xl border border-dashed border-slate-400">
                         <div className="flex justify-between items-center">
                             <span className="text-xs font-bold text-slate-500 uppercase">Total Estimated Fuel Cost</span>
@@ -788,7 +850,7 @@ export default function App() {
       </div>
 
       {/* --- MAP AREA --- */}
-      <div className="h-[45%] md:h-full w-full md:flex-1 relative z-0 order-last md:order-none">
+      <div className="flex-1 relative z-0">
         <MapContainer center={mapCenter} zoom={zoom} style={{ height: "100%", width: "100%" }}>
            <ChangeView center={mapCenter} zoom={zoom} />
            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="EcoRide" />
