@@ -7,12 +7,27 @@ import Stats from './models/Stats.js';
 import 'dotenv/config';
 
 const app = express();
-app.use(cors());
+
+// CORS Configuration for production & development
+const allowedOrigins = [
+    'http://localhost:5173',
+    'http://localhost:3000',
+    process.env.FRONTEND_URL,
+    'https://ecoride-server.onrender.com'
+].filter(Boolean);
+
+app.use(cors({
+    origin: allowedOrigins,
+    credentials: true
+}));
 app.use(express.json());
 
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: { origin: "*" }
+    cors: { 
+        origin: allowedOrigins,
+        credentials: true
+    }
 });
 
 const mongoURI = process.env.MONGODB_URI;

@@ -1,0 +1,18 @@
+{
+  "projectId": "your-project-id",
+  "orgId": "your-org-id",
+  "buildCommand": "npm run build",
+  "installCommand": "npm install",
+  "outputDirectory": "dist",
+  "env": {
+    "VITE_API_URL": "@api_url"
+  },
+  "envs": {
+    "production": {
+      "VITE_API_URL": "https://your-render-app.onrender.com"
+    },
+    "preview": {
+      "VITE_API_URL": "https://your-render-app.onrender.com"
+    }
+  }
+}
