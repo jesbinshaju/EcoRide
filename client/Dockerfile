@@ -13,7 +13,7 @@ RUN npm install
 COPY . .
 
 # Build the app with environment variables
-ARG VITE_API_URL=http://localhost:5000
+ARG VITE_API_URL=https://ecoride-t9uw.onrender.com
 ENV VITE_API_URL=$VITE_API_URL
 
 RUN npm run build

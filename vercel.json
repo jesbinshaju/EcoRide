@@ -9,10 +9,10 @@
   },
   "envs": {
     "production": {
-      "VITE_API_URL": "https://your-render-app.onrender.com"
+      "VITE_API_URL": "https://ecoride-t9uw.onrender.com"
     },
     "preview": {
-      "VITE_API_URL": "https://your-render-app.onrender.com"
+      "VITE_API_URL": "https://ecoride-t9uw.onrender.com"
     }
   }
 }
