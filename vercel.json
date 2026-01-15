@@ -1,18 +1,4 @@
 {
-  "projectId": "your-project-id",
-  "orgId": "your-org-id",
   "buildCommand": "npm run build",
-  "installCommand": "npm install",
-  "outputDirectory": "dist",
-  "env": {
-    "VITE_API_URL": "@api_url"
-  },
-  "envs": {
-    "production": {
-      "VITE_API_URL": "https://ecoride-t9uw.onrender.com"
-    },
-    "preview": {
-      "VITE_API_URL": "https://ecoride-t9uw.onrender.com"
-    }
-  }
+  "outputDirectory": "dist"
 }
